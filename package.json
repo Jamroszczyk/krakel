@@ -1,5 +1,5 @@
 {
-  "name": "todograph",
+  "name": "krakel",
   "private": true,
   "version": "0.1.0",
   "description": "Visuelle To-Do-App mit Node-Graph",
@@ -51,8 +51,8 @@
     "wait-on": "^9.0.3"
   },
   "build": {
-    "appId": "com.todograph.app",
-    "productName": "ToDoGraph",
+    "appId": "com.krakel.app",
+    "productName": "Krakel",
     "directories": {
       "output": "dist_electron"
     },
@@ -64,7 +64,7 @@
       "target": [
         "nsis"
       ],
-      "icon": "public/vite.svg"
+      "icon": "public/octopus_logo.ico"
     },
     "nsis": {
       "oneClick": false,

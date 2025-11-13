@@ -1,4 +1,4 @@
-# 📦 Build-Anleitung für ToDoGraph
+# 📦 Build-Anleitung für Krakel
 
 ## Vorbereitung
 
@@ -18,7 +18,7 @@ Erstelle ein Icon für die App:
 In `package.json`:
 ```json
 {
-  "name": "todograph",
+  "name": "krakel",
   "version": "0.1.0",
   "author": "Dein Name"
 }
@@ -53,7 +53,7 @@ npm run dist
 Die fertige `.exe` findest du in:
 ```
 dist_electron/
-  └── ToDoGraph Setup 0.1.0.exe
+  └── Krakel Setup 0.1.0.exe
 ```
 
 ## ⚙️ Build-Optionen anpassen
@@ -63,8 +63,8 @@ In `package.json` unter `build`:
 ```json
 {
   "build": {
-    "appId": "com.todograph.app",
-    "productName": "ToDoGraph",
+    "appId": "com.krakel.app",
+    "productName": "Krakel",
     "win": {
       "target": ["nsis"],        // Installer-Typ
       "icon": "public/icon.ico"  // Icon-Pfad

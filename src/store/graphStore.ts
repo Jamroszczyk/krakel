@@ -6,6 +6,7 @@ import { getHierarchicalLayout } from '../utils/layoutEngine';
 interface GraphState {
   nodes: Node[];
   edges: Edge[];
+  isAnyNodeEditing: boolean;
   setNodes: (nodes: Node[]) => void;
   setEdges: (edges: Edge[]) => void;
   onNodesChange: (changes: NodeChange[]) => void;
@@ -13,6 +14,8 @@ interface GraphState {
   addNode: (node: Node) => void;
   removeNode: (nodeId: string) => void;
   updateNode: (nodeId: string, data: any) => void;
+  setNodeDraggable: (nodeId: string, draggable: boolean) => void;
+  setIsAnyNodeEditing: (isEditing: boolean) => void;
   loadGraph: (data: { nodes: Node[]; edges: Edge[] }) => void;
   resetGraph: () => void;
   applyAutoLayout: () => Promise<void>;
@@ -23,52 +26,26 @@ const initialNodes: Node[] = [
   {
     id: '1',
     type: 'default',
-    data: { label: '📋 Hauptaufgabe: ToDo Graph App' },
+    data: { label: '📋 Hauptaufgabe: Krakel App' },
     position: { x: 250, y: 50 },
-    style: {
-      background: '#fff',
-      border: '2px solid #3b82f6',
-      borderRadius: '12px',
-      padding: '12px',
-      fontSize: '14px',
-      fontWeight: 600,
-    },
   },
   {
     id: '2',
+    type: 'default',
     data: { label: '✅ ReactFlow integrieren' },
     position: { x: 100, y: 180 },
-    style: {
-      background: '#fff',
-      border: '2px solid #10b981',
-      borderRadius: '12px',
-      padding: '10px',
-      fontSize: '13px',
-    },
   },
   {
     id: '3',
+    type: 'default',
     data: { label: '🎨 UI Design erstellen' },
     position: { x: 400, y: 180 },
-    style: {
-      background: '#fff',
-      border: '2px solid #8b5cf6',
-      borderRadius: '12px',
-      padding: '10px',
-      fontSize: '13px',
-    },
   },
   {
     id: '4',
+    type: 'default',
     data: { label: '💾 State Management' },
     position: { x: 100, y: 310 },
-    style: {
-      background: '#fff',
-      border: '2px solid #f59e0b',
-      borderRadius: '12px',
-      padding: '10px',
-      fontSize: '13px',
-    },
   },
 ];
 
@@ -77,7 +54,7 @@ const initialEdges: Edge[] = [
     id: 'e1-2',
     source: '1',
     target: '2',
-    type: 'smoothstep',
+    type: 'default',
     animated: false,
     style: { stroke: '#3b82f6', strokeWidth: 2 },
     markerEnd: { type: 'arrowclosed' },
@@ -86,7 +63,7 @@ const initialEdges: Edge[] = [
     id: 'e1-3',
     source: '1',
     target: '3',
-    type: 'smoothstep',
+    type: 'default',
     animated: false,
     style: { stroke: '#3b82f6', strokeWidth: 2 },
     markerEnd: { type: 'arrowclosed' },
@@ -95,7 +72,7 @@ const initialEdges: Edge[] = [
     id: 'e2-4',
     source: '2',
     target: '4',
-    type: 'smoothstep',
+    type: 'default',
     animated: false,
     style: { stroke: '#10b981', strokeWidth: 2 },
     markerEnd: { type: 'arrowclosed' },
@@ -105,9 +82,11 @@ const initialEdges: Edge[] = [
 export const useGraphStore = create<GraphState>((set, get) => ({
   nodes: initialNodes,
   edges: initialEdges,
+  isAnyNodeEditing: false,
 
   setNodes: (nodes) => set({ nodes }),
   setEdges: (edges) => set({ edges }),
+  setIsAnyNodeEditing: (isEditing) => set({ isAnyNodeEditing: isEditing }),
 
   onNodesChange: (changes) => {
     set({
@@ -136,6 +115,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     set({
       nodes: get().nodes.map((node) =>
         node.id === nodeId ? { ...node, data: { ...node.data, ...data } } : node
+      ),
+    });
+  },
+
+  setNodeDraggable: (nodeId, draggable) => {
+    set({
+      nodes: get().nodes.map((node) =>
+        node.id === nodeId ? { ...node, draggable } : node
       ),
     });
   },

@@ -1,4 +1,4 @@
-# 🧠 ToDoGraph
+# 🐙 Krakel
 
 Eine visuelle To-Do-App mit Node-Graph-Darstellung. Organisiere deine Aufgaben hierarchisch von oben (Hauptaufgaben) nach unten (Unteraufgaben) - wie eine interaktive Mindmap!
 
@@ -48,7 +48,7 @@ npm run build
 npm run electron:build
 ```
 
-Die fertige `.exe` findest du dann in `dist_electron/`.
+Die fertige `.exe` (Krakel Setup.exe) findest du dann in `dist_electron/`.
 
 ## 🛠️ Tech Stack
 

@@ -18,6 +18,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
     },
     backgroundColor: '#f9fafb',
+    icon: path.join(__dirname, '../public/octopus_logo.ico'),
     show: false,
   });
 

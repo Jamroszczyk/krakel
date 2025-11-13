@@ -1,17 +1,29 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { ReactFlow, Controls, Background, BackgroundVariant, MarkerType } from 'reactflow';
 import type { Connection } from 'reactflow';
 import { addEdge } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useGraphStore } from '../store/graphStore';
+import EditableNode from './EditableNode';
+
+const nodeTypes = {
+  default: EditableNode,
+};
 
 export default function GraphView() {
-  const { nodes, edges, onNodesChange, onEdgesChange, setEdges } = useGraphStore();
+  const { nodes, edges, onNodesChange, onEdgesChange, setEdges, isAnyNodeEditing, setIsAnyNodeEditing } = useGraphStore();
 
   const onConnect = useCallback(
     (params: Connection) => setEdges(addEdge(params, edges)),
     [edges, setEdges]
   );
+
+  const handlePaneClick = useCallback(() => {
+    if (isAnyNodeEditing) {
+      // Sofort Edit-Modus beenden
+      setIsAnyNodeEditing(false);
+    }
+  }, [isAnyNodeEditing, setIsAnyNodeEditing]);
 
   return (
     <div className="w-full h-full bg-gray-50">
@@ -21,11 +33,15 @@ export default function GraphView() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        nodeTypes={nodeTypes}
+        panOnDrag={true}
+        noPanClassName="no-pan"
+        onPaneClick={handlePaneClick}
         fitView
         minZoom={0.2}
         maxZoom={2}
         defaultEdgeOptions={{
-          type: 'smoothstep',
+          type: 'default',
           animated: false,
           style: { strokeWidth: 2 },
           markerEnd: { type: MarkerType.ArrowClosed },
