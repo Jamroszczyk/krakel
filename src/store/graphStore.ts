@@ -8,6 +8,7 @@ export interface TaskNode extends Node {
     label: string;
     level: 0 | 1 | 2;
     slot: number;
+    completed?: boolean;
   };
 }
 
@@ -119,7 +120,6 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
   swapNodeSlots: (nodeId, targetSlot) => {
     const nodes = get().nodes;
-    const edges = get().edges;
     const node = nodes.find(n => n.id === nodeId);
     if (!node) return;
 

@@ -1,13 +1,14 @@
 import { type FC } from 'react';
 import { useGraphStore } from '../store/graphStore';
 import { colors } from '../theme/colors';
+import type { TaskNode } from '../store/graphStore';
 
 const Pinboard: FC = () => {
   const { nodes, edges, pinnedNodeIds, toggleNodeCompleted, unpinNode } = useGraphStore();
 
   const pinnedNodes = pinnedNodeIds
     .map(id => nodes.find(n => n.id === id))
-    .filter(Boolean);
+    .filter((node): node is TaskNode => node !== undefined);
 
   // Helper function to find parent node
   const getParentNode = (nodeId: string) => {

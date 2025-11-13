@@ -192,8 +192,7 @@ export function calculateLayout(
 export function getSlotAtPosition(
   x: number,
   level: number,
-  nodes: TaskNode[],
-  nodeSpacing = NODE_SPACING
+  nodes: TaskNode[]
 ): number {
   const nodesAtLevel = nodes.filter(n => n.data.level === level);
   nodesAtLevel.sort((a, b) => a.data.slot - b.data.slot);

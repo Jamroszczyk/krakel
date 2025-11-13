@@ -76,14 +76,14 @@ const GraphView: FC = () => {
   );
 
   const onEdgesChange: OnEdgesChange = useCallback(
-    (changes) => {
+    (_changes) => {
       setEdges(edges);
     },
     [edges, setEdges]
   );
 
   const onNodeDragStop: NodeDragHandler = useCallback(
-    (event, node, nodes) => {
+    (_event, node) => {
       const draggedNode = positionedNodes.find(n => n.id === node.id);
       if (!draggedNode) return;
 
@@ -130,7 +130,6 @@ const GraphView: FC = () => {
           color={colors.edge} 
           gap={16} 
           size={1}
-          variant="dots"
         />
         <Controls />
         <MiniMap
