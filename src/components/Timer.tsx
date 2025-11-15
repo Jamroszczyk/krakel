@@ -382,7 +382,7 @@ const Timer: FC = () => {
               disabled={totalSeconds === 0 || timeLeft === 0}
               style={{
                 padding: '10px 24px',
-                backgroundColor: (totalSeconds === 0 || timeLeft === 0) ? colors.neutral.gray300 : colors.primary.light,
+                backgroundColor: (totalSeconds === 0 || timeLeft === 0) ? colors.neutral.gray400 : colors.primary.light,
                 color: colors.neutral.white,
                 border: 'none',
                 borderRadius: '24px',
