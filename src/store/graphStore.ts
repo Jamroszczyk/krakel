@@ -18,6 +18,8 @@ interface GraphState {
   edges: Edge[];
   pinnedNodeIds: string[];
   batchTitle: string;
+  isDragging: boolean; // PERFORMANCE: Track dragging state to disable expensive operations
+  isAutoFormatting: boolean; // Track auto-formatting state to enable smooth transitions
   addNode: (parentId?: string, level?: 0 | 1 | 2) => void;
   updateNodeLabel: (nodeId: string, label: string) => void;
   toggleNodeCompleted: (nodeId: string) => void;
@@ -30,6 +32,8 @@ interface GraphState {
   reorderPinnedNodes: (fromIndex: number, toIndex: number) => void;
   toggleAllPinnedCompleted: () => void;
   setBatchTitle: (title: string) => void;
+  setDragging: (isDragging: boolean) => void;
+  setAutoFormatting: (isAutoFormatting: boolean) => void;
   saveToJSON: () => string;
   loadFromJSON: (json: string) => void;
   setNodes: (nodes: TaskNode[]) => void;
@@ -156,6 +160,11 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   edges: initialEdges,
   pinnedNodeIds: [],
   batchTitle: 'Current Batch',
+  isDragging: false,
+  isAutoFormatting: false,
+  
+  setDragging: (isDragging) => set({ isDragging }),
+  setAutoFormatting: (isAutoFormatting) => set({ isAutoFormatting }),
 
   addNode: (parentId, level = 0) => {
     const nodes = get().nodes;
@@ -302,7 +311,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     
     // Now apply the layout with updated slots
     const layoutedNodes = calculateLayout(nodesWithUpdatedSlots, edges);
-    set({ nodes: layoutedNodes });
+    
+    // Enable smooth transitions for auto-format
+    set({ isAutoFormatting: true, nodes: layoutedNodes });
+    
+    // Disable auto-formatting state after animation completes (400ms for smooth transition)
+    setTimeout(() => {
+      set({ isAutoFormatting: false });
+    }, 400);
   },
 
   pinNode: (nodeId) => {

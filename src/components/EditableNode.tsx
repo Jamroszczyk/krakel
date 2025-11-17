@@ -1,7 +1,6 @@
-import { memo, useState, useRef, useEffect, type FC } from 'react';
+import { memo, useState, useRef, useEffect, useMemo, useCallback, type FC } from 'react';
 import { Handle, Position, type NodeProps } from 'reactflow';
 import { useGraphStore } from '../store/graphStore';
-import { calculateNodeProgress } from '../utils/progressCalculation';
 import { colors } from '../theme/colors';
 
 const EditableNode: FC<NodeProps> = ({ id, data, selected }) => {
@@ -13,15 +12,100 @@ const EditableNode: FC<NodeProps> = ({ id, data, selected }) => {
   const toggleNodeCompleted = useGraphStore(state => state.toggleNodeCompleted);
   const addNode = useGraphStore(state => state.addNode);
   const pinNode = useGraphStore(state => state.pinNode);
+  
+  // PERFORMANCE FIX: Use selectors to minimize re-renders
   const pinnedNodeIds = useGraphStore(state => state.pinnedNodeIds);
+  const isDragging = useGraphStore(state => state.isDragging); // PERFORMANCE: Check if dragging to skip expensive operations
+  
+  // Only subscribe to edges structure (not positions) - edges don't change during drag
   const edges = useGraphStore(state => state.edges);
-  const nodes = useGraphStore(state => state.nodes);
   
-  // Check if this node has children
-  const hasChildren = edges.some(edge => edge.source === id);
+  // Memoize hasChildren check - only depends on edges, which don't change during drag
+  const hasChildren = useMemo(() => {
+    return edges.some(edge => edge.source === id);
+  }, [edges, id]);
   
-  // Calculate progress for parent nodes
-  const progress = hasChildren ? calculateNodeProgress(id, nodes, edges) : 0;
+  // PERFORMANCE FIX: Only subscribe to completion status of descendant leaf nodes, not entire nodes array
+  // Returns a serialized string that only changes when completion status changes (not positions)
+  // PERFORMANCE: Skip expensive calculation during drag - use cached value or 0
+  const completionSelector = useCallback(
+    (state: ReturnType<typeof useGraphStore.getState>) => {
+      // PERFORMANCE: Skip expensive calculation during drag
+      if (state.isDragging || !hasChildren) return '';
+      
+      // Get all descendant IDs using BFS
+      const descendants = new Set<string>();
+      const queue = [id];
+      
+      while (queue.length > 0) {
+        const currentId = queue.shift()!;
+        const children = state.edges
+          .filter(edge => edge.source === currentId)
+          .map(edge => edge.target);
+        
+        children.forEach(childId => {
+          if (!descendants.has(childId)) {
+            descendants.add(childId);
+            queue.push(childId);
+          }
+        });
+      }
+      
+      // Extract only completion status of leaf descendants (sorted for consistent hash)
+      const leafCompletions: Array<[string, boolean]> = [];
+      descendants.forEach(descendantId => {
+        const node = state.nodes.find(n => n.id === descendantId);
+        if (node) {
+          // Only store leaf nodes' completion status (they're the ones that matter for progress)
+          const nodeHasChildren = state.edges.some(e => e.source === descendantId);
+          if (!nodeHasChildren) {
+            leafCompletions.push([descendantId, node.data.completed ?? false]);
+          }
+        }
+      });
+      
+      // Sort by ID for consistent hash, then serialize
+      leafCompletions.sort((a, b) => a[0].localeCompare(b[0]));
+      return JSON.stringify(leafCompletions);
+    },
+    [id, hasChildren]
+  );
+  
+  // Zustand will use shallow equality for strings (which compares by value)
+  const descendantCompletionHash = useGraphStore(completionSelector);
+  
+  // PERFORMANCE: Cache progress value to avoid recalculation during drag
+  const progressRef = useRef<number>(0);
+  
+  // Calculate progress from the completion hash
+  // PERFORMANCE: Use cached progress during drag to avoid recalculation
+  const progress = useMemo(() => {
+    // PERFORMANCE: Skip calculation during drag - use cached value
+    if (isDragging) {
+      return progressRef.current; // Return cached value during drag
+    }
+    
+    if (!hasChildren || !descendantCompletionHash) {
+      progressRef.current = 0;
+      return 0;
+    }
+    
+    try {
+      const leafCompletions: Array<[string, boolean]> = JSON.parse(descendantCompletionHash);
+      if (leafCompletions.length === 0) {
+        progressRef.current = 0;
+        return 0;
+      }
+      
+      const completedCount = leafCompletions.filter(([, completed]) => completed).length;
+      const calculatedProgress = completedCount / leafCompletions.length;
+      progressRef.current = calculatedProgress; // Cache the value
+      return calculatedProgress;
+    } catch {
+      progressRef.current = 0;
+      return 0;
+    }
+  }, [hasChildren, descendantCompletionHash, isDragging]);
   
   // Check if this node is pinned
   const isPinned = pinnedNodeIds.includes(id);
@@ -469,5 +553,16 @@ const EditableNode: FC<NodeProps> = ({ id, data, selected }) => {
   );
 };
 
-export default memo(EditableNode);
+// Memoize with custom comparison to prevent unnecessary re-renders
+// Only re-render if id, data, or selected actually change
+export default memo(EditableNode, (prevProps, nextProps) => {
+  return (
+    prevProps.id === nextProps.id &&
+    prevProps.selected === nextProps.selected &&
+    prevProps.data.label === nextProps.data.label &&
+    prevProps.data.level === nextProps.data.level &&
+    prevProps.data.slot === nextProps.data.slot &&
+    prevProps.data.completed === nextProps.data.completed
+  );
+});
 
