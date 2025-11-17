@@ -22,7 +22,7 @@ const nodeTypes = { editableNode: EditableNode };
 
 const GraphView: FC = () => {
   const { fitView } = useReactFlow();
-  const { nodes: storeNodes, edges: storeEdges, setNodes: setStoreNodes, setEdges: setStoreEdges, deleteNode, setDragging, isAutoFormatting } = useGraphStore();
+  const { nodes: storeNodes, edges: storeEdges, setNodes: setStoreNodes, setEdges: setStoreEdges, deleteNode, setDragging, isAutoFormatting, saveStateSnapshot } = useGraphStore();
   
   // CRITICAL: Use React Flow's optimized hooks for smooth rendering
   const [nodes, setNodes, onNodesChange] = useNodesState(storeNodes);
@@ -49,6 +49,13 @@ const GraphView: FC = () => {
     id: string; 
     initialPosition: { x: number; y: number };
     initialChildPositions: Map<string, { x: number; y: number }>;
+  } | null>(null);
+  
+  // Deletion confirmation modal state
+  const [deletionModal, setDeletionModal] = useState<{
+    nodeId: string;
+    nodeLabel: string;
+    childCount: number;
   } | null>(null);
   
   // PERFORMANCE FIX: Removed continuous store sync during drag
@@ -101,20 +108,35 @@ const GraphView: FC = () => {
           if (selectedNode) {
             // Prevent default browser behavior (going back in history)
             event.preventDefault();
-            deleteNode(selectedNode.id);
+            event.stopPropagation();
+            
+            // Count descendants (children) for the confirmation modal
+            const descendants = getDescendants(selectedNode.id);
+            const childCount = descendants.length - 1; // Exclude the node itself
+            
+            // Defer modal state update to avoid React warning about updating during render
+            setTimeout(() => {
+              setDeletionModal({
+                nodeId: selectedNode.id,
+                nodeLabel: selectedNode.data.label,
+                childCount: childCount,
+              });
+            }, 0);
           }
         }
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [nodes, deleteNode]);
+    window.addEventListener('keydown', handleKeyDown, true); // Use capture phase
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [nodes, getDescendants]);
 
   // CRITICAL: onNodeDragStart - capture initial positions of parent and all children
   const onNodeDragStart: NodeDragHandler = useCallback((_event, node) => {
     isDraggingRef.current = true;
     setDragging(true); // PERFORMANCE: Set global dragging state to disable expensive operations
+    // Save state snapshot before drag starts for undo/redo
+    saveStateSnapshot();
     // Disable auto-formatting transitions if active (user started dragging during auto-format)
     if (isAutoFormatting) {
       useGraphStore.getState().setAutoFormatting(false);
@@ -140,7 +162,7 @@ const GraphView: FC = () => {
       initialPosition: { x: node.position.x, y: node.position.y },
       initialChildPositions
     });
-  }, [nodes, getDescendants, setDragging]);
+    }, [nodes, getDescendants, setDragging, saveStateSnapshot, isAutoFormatting]);
 
   // CRITICAL: onNodeDrag - Use absolute positioning based on initial positions
   // This prevents accumulation errors from incremental updates
@@ -189,6 +211,7 @@ const GraphView: FC = () => {
     // Sync to Zustand store ONCE after drag completes (not during drag)
     skipSyncRef.current = true; // Prevent sync loop
     setStoreNodes(nodes as TaskNode[]);
+    // Note: State snapshot was saved on drag start, not here
     setDraggedNode(null);
   }, [nodes, setStoreNodes, setDragging]);
 
@@ -282,6 +305,116 @@ const GraphView: FC = () => {
           className="!bg-white !border-2 !border-gray-200"
         />
       </ReactFlow>
+      
+      {/* Deletion Confirmation Modal */}
+      {deletionModal && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 3000,
+            backdropFilter: 'blur(4px)',
+          }}
+          onClick={() => setDeletionModal(null)}
+        >
+          <div 
+            style={{
+              backgroundColor: colors.neutral.white,
+              borderRadius: '16px',
+              padding: '32px',
+              maxWidth: '500px',
+              width: '90%',
+              boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
+              position: 'relative',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{
+              fontSize: '24px',
+              fontWeight: 'bold',
+              color: colors.neutral.gray900,
+              marginBottom: '16px',
+              marginTop: 0,
+            }}>
+              Delete Node?
+            </h2>
+            
+            <p style={{
+              fontSize: '16px',
+              lineHeight: '1.6',
+              color: colors.neutral.gray700,
+              marginBottom: '24px',
+            }}>
+              Are you sure you want to delete <strong>"{deletionModal.nodeLabel}"</strong>?
+              {deletionModal.childCount > 0 && (
+                <>
+                  <br /><br />
+                  All {deletionModal.childCount} {deletionModal.childCount === 1 ? 'child' : 'children'} of this node will also be removed.
+                </>
+              )}
+            </p>
+            
+            <div style={{
+              display: 'flex',
+              gap: '12px',
+              justifyContent: 'flex-end',
+            }}>
+              <button
+                onClick={() => setDeletionModal(null)}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: colors.neutral.gray100,
+                  color: colors.neutral.gray700,
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontWeight: '500',
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  transition: 'background-color 0.2s',
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = colors.neutral.gray200}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = colors.neutral.gray100}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const nodeIdToDelete = deletionModal.nodeId;
+                  setDeletionModal(null);
+                  // Defer deletion to avoid React warning about updating during render
+                  // Also ensure sync happens by clearing skipSyncRef
+                  skipSyncRef.current = false;
+                  setTimeout(() => {
+                    deleteNode(nodeIdToDelete);
+                  }, 0);
+                }}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: colors.error,
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontWeight: '500',
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  transition: 'background-color 0.2s',
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#dc2626'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = colors.error}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

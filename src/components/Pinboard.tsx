@@ -1,4 +1,4 @@
-import { type FC, useState } from 'react';
+import { type FC, useState, useEffect } from 'react';
 import { useGraphStore } from '../store/graphStore';
 import { colors } from '../theme/colors';
 import type { TaskNode } from '../store/graphStore';
@@ -20,8 +20,14 @@ const Pinboard: FC = () => {
   } = useGraphStore();
 
   const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [localBatchTitle, setLocalBatchTitle] = useState(batchTitle);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  
+  // Sync local title with store title when it changes externally
+  useEffect(() => {
+    setLocalBatchTitle(batchTitle);
+  }, [batchTitle]);
 
   // Custom cursor styles
   const cursorStyle = draggedIndex !== null 
@@ -156,11 +162,26 @@ const Pinboard: FC = () => {
             {isEditingTitle ? (
               <input
                 type="text"
-                value={batchTitle}
-                onChange={(e) => setBatchTitle(e.target.value)}
-                onBlur={() => setIsEditingTitle(false)}
+                value={localBatchTitle}
+                onChange={(e) => setLocalBatchTitle(e.target.value)}
+                onBlur={() => {
+                  setIsEditingTitle(false);
+                  // Only save to store (and create undo snapshot) when editing is done
+                  if (localBatchTitle !== batchTitle) {
+                    setBatchTitle(localBatchTitle);
+                  }
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
+                    setIsEditingTitle(false);
+                    // Only save to store (and create undo snapshot) when editing is done
+                    if (localBatchTitle !== batchTitle) {
+                      setBatchTitle(localBatchTitle);
+                    }
+                  }
+                  if (e.key === 'Escape') {
+                    // Cancel editing and revert to original value
+                    setLocalBatchTitle(batchTitle);
                     setIsEditingTitle(false);
                   }
                 }}
@@ -178,7 +199,10 @@ const Pinboard: FC = () => {
               />
             ) : (
               <h3
-                onClick={() => setIsEditingTitle(true)}
+                onClick={() => {
+                  setLocalBatchTitle(batchTitle); // Initialize local state when starting to edit
+                  setIsEditingTitle(true);
+                }}
                 style={{
                   flex: 1,
                   fontSize: '16px',

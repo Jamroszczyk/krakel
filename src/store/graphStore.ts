@@ -20,6 +20,8 @@ interface GraphState {
   batchTitle: string;
   isDragging: boolean; // PERFORMANCE: Track dragging state to disable expensive operations
   isAutoFormatting: boolean; // Track auto-formatting state to enable smooth transitions
+  undoStack: string[]; // Array of JSON state snapshots (max 5)
+  redoStack: string[]; // Array of JSON state snapshots (max 5)
   addNode: (parentId?: string, level?: 0 | 1 | 2) => void;
   updateNodeLabel: (nodeId: string, label: string) => void;
   toggleNodeCompleted: (nodeId: string) => void;
@@ -34,6 +36,11 @@ interface GraphState {
   setBatchTitle: (title: string) => void;
   setDragging: (isDragging: boolean) => void;
   setAutoFormatting: (isAutoFormatting: boolean) => void;
+  saveStateSnapshot: () => void; // Save current state to undo stack
+  undo: () => void;
+  redo: () => void;
+  canUndo: () => boolean;
+  canRedo: () => boolean;
   saveToJSON: () => string;
   loadFromJSON: (json: string) => void;
   setNodes: (nodes: TaskNode[]) => void;
@@ -162,11 +169,105 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   batchTitle: 'Current Batch',
   isDragging: false,
   isAutoFormatting: false,
+  undoStack: [],
+  redoStack: [],
   
   setDragging: (isDragging) => set({ isDragging }),
   setAutoFormatting: (isAutoFormatting) => set({ isAutoFormatting }),
+  
+  // Save current state to undo stack (max 5 steps)
+  saveStateSnapshot: () => {
+    const state = get();
+    const snapshot = JSON.stringify({
+      nodes: state.nodes,
+      edges: state.edges,
+      pinnedNodeIds: state.pinnedNodeIds,
+      batchTitle: state.batchTitle,
+    });
+    
+    const undoStack = [...state.undoStack, snapshot];
+    // Keep only last 5 steps
+    if (undoStack.length > 5) {
+      undoStack.shift();
+    }
+    
+    set({ 
+      undoStack,
+      redoStack: [], // Clear redo stack when new action is performed
+    });
+  },
+  
+  // Undo: restore previous state
+  undo: () => {
+    const state = get();
+    if (state.undoStack.length === 0) return;
+    
+    // Save current state to redo stack
+    const currentSnapshot = JSON.stringify({
+      nodes: state.nodes,
+      edges: state.edges,
+      pinnedNodeIds: state.pinnedNodeIds,
+      batchTitle: state.batchTitle,
+    });
+    
+    const redoStack = [...state.redoStack, currentSnapshot];
+    if (redoStack.length > 5) {
+      redoStack.shift();
+    }
+    
+    // Restore previous state
+    const previousSnapshot = state.undoStack[state.undoStack.length - 1];
+    const previousState = JSON.parse(previousSnapshot);
+    const undoStack = state.undoStack.slice(0, -1);
+    
+    set({
+      nodes: previousState.nodes,
+      edges: previousState.edges,
+      pinnedNodeIds: previousState.pinnedNodeIds || [],
+      batchTitle: previousState.batchTitle || 'Current Batch',
+      undoStack,
+      redoStack,
+    });
+  },
+  
+  // Redo: restore next state
+  redo: () => {
+    const state = get();
+    if (state.redoStack.length === 0) return;
+    
+    // Save current state to undo stack
+    const currentSnapshot = JSON.stringify({
+      nodes: state.nodes,
+      edges: state.edges,
+      pinnedNodeIds: state.pinnedNodeIds,
+      batchTitle: state.batchTitle,
+    });
+    
+    const undoStack = [...state.undoStack, currentSnapshot];
+    if (undoStack.length > 5) {
+      undoStack.shift();
+    }
+    
+    // Restore next state
+    const nextSnapshot = state.redoStack[state.redoStack.length - 1];
+    const nextState = JSON.parse(nextSnapshot);
+    const redoStack = state.redoStack.slice(0, -1);
+    
+    set({
+      nodes: nextState.nodes,
+      edges: nextState.edges,
+      pinnedNodeIds: nextState.pinnedNodeIds || [],
+      batchTitle: nextState.batchTitle || 'Current Batch',
+      undoStack,
+      redoStack,
+    });
+  },
+  
+  canUndo: () => get().undoStack.length > 0,
+  canRedo: () => get().redoStack.length > 0,
 
   addNode: (parentId, level = 0) => {
+    get().saveStateSnapshot(); // Save state before action
     const nodes = get().nodes;
     const edges = get().edges;
     const pinnedNodeIds = get().pinnedNodeIds;
@@ -213,6 +314,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   updateNodeLabel: (nodeId, label) => {
+    get().saveStateSnapshot(); // Save state before action
     set({
       nodes: get().nodes.map(node =>
         node.id === nodeId
@@ -223,6 +325,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   toggleNodeCompleted: (nodeId) => {
+    get().saveStateSnapshot(); // Save state before action
     set({
       nodes: get().nodes.map(node =>
         node.id === nodeId
@@ -233,6 +336,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   deleteNode: (nodeId) => {
+    get().saveStateSnapshot(); // Save state before action
     const nodes = get().nodes;
     const edges = get().edges;
 
@@ -253,6 +357,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   swapNodeSlots: (nodeId, targetSlot) => {
+    get().saveStateSnapshot(); // Save state before action
     const nodes = get().nodes;
     const node = nodes.find(n => n.id === nodeId);
     if (!node) return;
@@ -279,6 +384,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   applyAutoLayout: () => {
+    get().saveStateSnapshot(); // Save state before action
     const { nodes, edges } = get();
     
     // First, update slots based on current X positions to respect manual reordering
@@ -322,6 +428,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   pinNode: (nodeId) => {
+    get().saveStateSnapshot(); // Save state before action
     const pinnedNodeIds = get().pinnedNodeIds;
     if (!pinnedNodeIds.includes(nodeId)) {
       set({ pinnedNodeIds: [...pinnedNodeIds, nodeId] });
@@ -329,14 +436,17 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   unpinNode: (nodeId) => {
+    get().saveStateSnapshot(); // Save state before action
     set({ pinnedNodeIds: get().pinnedNodeIds.filter(id => id !== nodeId) });
   },
 
   unpinAll: () => {
+    get().saveStateSnapshot(); // Save state before action
     set({ pinnedNodeIds: [] });
   },
 
   reorderPinnedNodes: (fromIndex, toIndex) => {
+    get().saveStateSnapshot(); // Save state before action
     const pinnedNodeIds = [...get().pinnedNodeIds];
     const [movedId] = pinnedNodeIds.splice(fromIndex, 1);
     pinnedNodeIds.splice(toIndex, 0, movedId);
@@ -344,6 +454,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   toggleAllPinnedCompleted: () => {
+    get().saveStateSnapshot(); // Save state before action
     const { nodes, pinnedNodeIds } = get();
     const pinnedNodes = nodes.filter(n => pinnedNodeIds.includes(n.id));
     
@@ -360,6 +471,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   setBatchTitle: (title) => {
+    get().saveStateSnapshot(); // Save state before action
     set({ batchTitle: title });
   },
 
@@ -371,7 +483,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   loadFromJSON: (json) => {
     try {
       const { nodes, edges, pinnedNodeIds = [], batchTitle = 'Current Batch' } = JSON.parse(json);
-      set({ nodes, edges, pinnedNodeIds, batchTitle });
+      // Clear undo/redo stacks when loading from JSON
+      set({ nodes, edges, pinnedNodeIds, batchTitle, undoStack: [], redoStack: [] });
     } catch (error) {
       console.error('Failed to load JSON:', error);
     }

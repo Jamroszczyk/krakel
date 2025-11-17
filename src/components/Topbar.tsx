@@ -3,7 +3,7 @@ import { useGraphStore } from '../store/graphStore';
 import { colors } from '../theme/colors';
 
 const Topbar: FC = () => {
-  const { addNode, saveToJSON, loadFromJSON, applyAutoLayout } = useGraphStore();
+  const { addNode, saveToJSON, loadFromJSON, applyAutoLayout, undo, redo, canUndo, canRedo } = useGraphStore();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isImpressumOpen, setIsImpressumOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -62,6 +62,39 @@ const Topbar: FC = () => {
     setIsMenuOpen(false);
   };
 
+  // Handle keyboard shortcuts for undo/redo
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Check if we're editing a node (textarea is focused)
+      const isEditingNode = document.activeElement?.tagName === 'TEXTAREA';
+      
+      // Only handle shortcuts if we're NOT editing
+      if (!isEditingNode) {
+        // Undo: Ctrl+Z (or Cmd+Z on Mac)
+        if ((event.ctrlKey || event.metaKey) && event.key === 'z' && !event.shiftKey) {
+          event.preventDefault();
+          if (canUndo()) {
+            undo();
+          }
+        }
+        
+        // Redo: Ctrl+Y or Ctrl+Shift+Z (or Cmd+Shift+Z on Mac)
+        if (
+          ((event.ctrlKey || event.metaKey) && event.key === 'y') ||
+          ((event.ctrlKey || event.metaKey) && event.key === 'z' && event.shiftKey)
+        ) {
+          event.preventDefault();
+          if (canRedo()) {
+            redo();
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [undo, redo, canUndo, canRedo]);
+
   return (
     <div style={{
       position: 'fixed',
@@ -99,6 +132,78 @@ const Topbar: FC = () => {
 
       {/* Center: Buttons */}
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        {/* Undo Button */}
+        <button
+          onClick={undo}
+          disabled={!canUndo()}
+          style={{
+            padding: '10px 20px',
+            backgroundColor: canUndo() ? colors.neutral.gray100 : colors.neutral.gray50,
+            color: canUndo() ? colors.neutral.gray700 : colors.neutral.gray400,
+            border: 'none',
+            borderRadius: '8px',
+            fontWeight: '500',
+            fontSize: '14px',
+            cursor: canUndo() ? 'pointer' : 'not-allowed',
+            transition: 'background-color 0.2s',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+          }}
+          onMouseEnter={(e) => {
+            if (canUndo()) {
+              e.currentTarget.style.backgroundColor = colors.neutral.gray200;
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (canUndo()) {
+              e.currentTarget.style.backgroundColor = colors.neutral.gray100;
+            }
+          }}
+          title="Undo (Ctrl+Z)"
+        >
+          <svg style={{ width: '18px', height: '18px' }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+          </svg>
+          Undo
+        </button>
+
+        {/* Redo Button */}
+        <button
+          onClick={redo}
+          disabled={!canRedo()}
+          style={{
+            padding: '10px 20px',
+            backgroundColor: canRedo() ? colors.neutral.gray100 : colors.neutral.gray50,
+            color: canRedo() ? colors.neutral.gray700 : colors.neutral.gray400,
+            border: 'none',
+            borderRadius: '8px',
+            fontWeight: '500',
+            fontSize: '14px',
+            cursor: canRedo() ? 'pointer' : 'not-allowed',
+            transition: 'background-color 0.2s',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+          }}
+          onMouseEnter={(e) => {
+            if (canRedo()) {
+              e.currentTarget.style.backgroundColor = colors.neutral.gray200;
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (canRedo()) {
+              e.currentTarget.style.backgroundColor = colors.neutral.gray100;
+            }
+          }}
+          title="Redo (Ctrl+Y)"
+        >
+          <svg style={{ width: '18px', height: '18px' }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 10h-10a8 8 0 00-8 8v2M21 10l-6 6m6-6l-6-6" />
+          </svg>
+          Redo
+        </button>
+
         <button
           onClick={handleAddRootNode}
           style={{
