@@ -238,7 +238,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🐛 Known Issues
 
-- None at the moment! Please report any issues you find.
+- (P) Performance issues while developer Console is opened due to render log
+- (UX) Slight Click/UX conflict between draging nodes and the node pin button
+- (UX) Slight Click/UX conflict between draging nodes and the node checkbox
 
 ## 💬 Support
 
