@@ -541,16 +541,16 @@ const EditableNode: FC<NodeProps> = ({ id, data, selected }) => {
         </svg>
       )}
 
-      {/* Add Child Button */}
+      {/* Add Child Button - positioned on the right side for horizontal layout */}
       {canHaveChildren && (
         <button
           onClick={handleAddChild}
           onMouseDown={handleButtonMouseDown}
           style={{
             position: 'absolute',
-            bottom: '-12px',
-            left: '50%',
-            transform: 'translateX(-50%)',
+            right: '-12px',
+            top: '50%',
+            transform: 'translateY(-50%)',
             width: '24px',
             height: '24px',
             borderRadius: '6px',
@@ -577,7 +577,7 @@ const EditableNode: FC<NodeProps> = ({ id, data, selected }) => {
             e.currentTarget.style.color = colors.secondary.blue;
           }}
         >
-          +
+          <span style={{ display: 'inline-block', transform: 'translateY(1px)' }}>+</span>
         </button>
       )}
     </div>

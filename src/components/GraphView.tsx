@@ -75,7 +75,7 @@ const nodeTypes = { editableNode: EditableNode };
 
 const GraphView: FC = () => {
   const { fitView } = useReactFlow();
-  const { nodes: storeNodes, edges: storeEdges, setNodes: setStoreNodes, setEdges: setStoreEdges, deleteNode, setDragging, isAutoFormatting, editingNodeId, saveStateSnapshot } = useGraphStore();
+  const { nodes: storeNodes, edges: storeEdges, setNodes: setStoreNodes, setEdges: setStoreEdges, deleteNode, deleteNodes, setDragging, isAutoFormatting, editingNodeId, saveStateSnapshot, nodeToCure, setNodeToCure } = useGraphStore();
   
   // CRITICAL: Use React Flow's optimized hooks for smooth rendering
   const [nodes, setNodes, onNodesChange] = useNodesState(storeNodes);
@@ -111,9 +111,9 @@ const GraphView: FC = () => {
   
   // Deletion confirmation modal state
   const [deletionModal, setDeletionModal] = useState<{
-    nodeId: string;
-    nodeLabel: string;
-    childCount: number;
+    nodeIds: string[];
+    nodeLabels: string[];
+    totalChildCount: number;
   } | null>(null);
   
   // PERFORMANCE FIX: Removed continuous store sync during drag
@@ -162,22 +162,29 @@ const GraphView: FC = () => {
         
         // Only handle deletion if we're NOT editing
         if (!isEditingNode) {
-          const selectedNode = nodes.find(n => n.selected);
-          if (selectedNode) {
+          const selectedNodes = nodes.filter(n => n.selected);
+          if (selectedNodes.length > 0) {
             // Prevent default browser behavior (going back in history)
             event.preventDefault();
             event.stopPropagation();
             
-            // Count descendants (children) for the confirmation modal
-            const descendants = getDescendants(selectedNode.id);
-            const childCount = descendants.length - 1; // Exclude the node itself
+            // Collect all descendants of all selected nodes
+            const allDescendants = new Set<string>();
+            selectedNodes.forEach(node => {
+              const descendants = getDescendants(node.id);
+              descendants.forEach(id => allDescendants.add(id));
+            });
+            
+            // Count total children (descendants excluding the selected nodes themselves)
+            const selectedNodeIds = new Set(selectedNodes.map(n => n.id));
+            const totalChildCount = Array.from(allDescendants).filter(id => !selectedNodeIds.has(id)).length;
             
             // Defer modal state update to avoid React warning about updating during render
             setTimeout(() => {
               setDeletionModal({
-                nodeId: selectedNode.id,
-                nodeLabel: selectedNode.data.label,
-                childCount: childCount,
+                nodeIds: selectedNodes.map(n => n.id),
+                nodeLabels: selectedNodes.map(n => n.data.label),
+                totalChildCount: totalChildCount,
               });
             }, 0);
           }
@@ -277,6 +284,56 @@ const GraphView: FC = () => {
     // Note: State snapshot was saved on drag start, not here
     setDraggedNode(null);
   }, [nodes, setStoreNodes, setDragging]);
+
+  // WORKAROUND: When a node needs to be "cured", directly call the drag handlers AND update through React Flow
+  // This triggers the exact same code path as a manual drag, including edge recalculation
+  // Must be defined AFTER the drag handlers are defined
+  useEffect(() => {
+    if (nodeToCure) {
+      // Reduced delay for faster animation - just enough for React Flow to register the node
+      setTimeout(() => {
+        const nodeToMove = nodes.find(n => n.id === nodeToCure);
+        if (nodeToMove) {
+          // Create a fake event object (React Flow handlers expect an event)
+          const fakeEvent = {
+            preventDefault: () => {},
+            stopPropagation: () => {},
+          } as React.MouseEvent;
+          
+          // Call onNodeDragStart to initialize drag state (exactly like manual drag)
+          onNodeDragStart(fakeEvent as any, nodeToMove);
+          
+          // Move immediately (no extra frame delay) - move the node exactly 1px to the right
+          const movedNode = {
+            ...nodeToMove,
+            position: { x: nodeToMove.position.x + 1, y: nodeToMove.position.y },
+          };
+          
+          // CRITICAL: Update through React Flow's setNodes to trigger edge recalculation
+          // This is what happens during a real drag - React Flow updates the node and recalculates edges
+          setNodes((nds) =>
+            nds.map((n) =>
+              n.id === nodeToCure
+                ? movedNode
+                : n
+            )
+          );
+          
+          // Also call onNodeDrag to handle descendant movement (if any)
+          onNodeDrag(fakeEvent as any, movedNode);
+          
+          // Finish the drag immediately (no extra frame delay)
+          onNodeDragStop(fakeEvent as any, movedNode);
+          
+          // Clear the cure flag immediately
+          setNodeToCure(null);
+        } else {
+          // If node not found, clear flag anyway to prevent infinite loop
+          setNodeToCure(null);
+        }
+      }, 30); // Reduced delay for faster animation
+    }
+  }, [nodeToCure, nodes, onNodeDragStart, onNodeDrag, onNodeDragStop, setNodes, setNodeToCure]);
 
   // Wrap onEdgesChange to sync to Zustand store
   const handleEdgesChange: OnEdgesChange = useCallback(
@@ -407,23 +464,47 @@ const GraphView: FC = () => {
               marginBottom: '16px',
               marginTop: 0,
             }}>
-              Delete Node?
+              {deletionModal.nodeIds.length === 1 ? 'Delete Node?' : `Delete ${deletionModal.nodeIds.length} Nodes?`}
             </h2>
             
-            <p style={{
+            <div style={{
               fontSize: '16px',
               lineHeight: '1.6',
               color: colors.neutral.gray700,
               marginBottom: '24px',
             }}>
-              Are you sure you want to delete <strong>"{deletionModal.nodeLabel}"</strong>?
-              {deletionModal.childCount > 0 && (
+              {deletionModal.nodeIds.length === 1 ? (
+                <p style={{ margin: 0 }}>
+                  Are you sure you want to delete <strong>"{deletionModal.nodeLabels[0]}"</strong>?
+                  {deletionModal.totalChildCount > 0 && (
+                    <>
+                      <br /><br />
+                      All {deletionModal.totalChildCount} {deletionModal.totalChildCount === 1 ? 'child' : 'children'} of this node will also be removed.
+                    </>
+                  )}
+                </p>
+              ) : (
                 <>
-                  <br /><br />
-                  All {deletionModal.childCount} {deletionModal.childCount === 1 ? 'child' : 'children'} of this node will also be removed.
+                  <p style={{ margin: 0, marginBottom: '16px' }}>
+                    Are you sure you want to delete <strong>{deletionModal.nodeIds.length} nodes</strong>?
+                    {deletionModal.totalChildCount > 0 && (
+                      <>
+                        <br /><br />
+                        All {deletionModal.totalChildCount} {deletionModal.totalChildCount === 1 ? 'child' : 'children'} of these nodes will also be removed.
+                      </>
+                    )}
+                  </p>
+                  <div style={{ fontSize: '14px', color: colors.neutral.gray600, marginTop: '8px' }}>
+                    Nodes to delete:
+                    <ul style={{ marginTop: '8px', paddingLeft: '20px' }}>
+                      {deletionModal.nodeLabels.map((label, idx) => (
+                        <li key={idx}>{label}</li>
+                      ))}
+                    </ul>
+                  </div>
                 </>
               )}
-            </p>
+            </div>
             
             <div style={{
               display: 'flex',
@@ -450,13 +531,13 @@ const GraphView: FC = () => {
               </button>
               <button
                 onClick={() => {
-                  const nodeIdToDelete = deletionModal.nodeId;
+                  const nodeIdsToDelete = deletionModal.nodeIds;
                   setDeletionModal(null);
                   // Defer deletion to avoid React warning about updating during render
                   // Also ensure sync happens by clearing skipSyncRef
                   skipSyncRef.current = false;
                   setTimeout(() => {
-                    deleteNode(nodeIdToDelete);
+                    deleteNodes(nodeIdsToDelete);
                   }, 0);
                 }}
                 style={{

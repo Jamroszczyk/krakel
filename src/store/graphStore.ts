@@ -21,12 +21,14 @@ interface GraphState {
   isDragging: boolean; // PERFORMANCE: Track dragging state to disable expensive operations
   isAutoFormatting: boolean; // Track auto-formatting state to enable smooth transitions
   editingNodeId: string | null; // Track which node is currently being edited (to disable dragging/panning)
+  nodeToCure: string | null; // Node ID that needs to be "cured" by simulating a drag (for edge animation fix)
   undoStack: string[]; // Array of JSON state snapshots (max 5)
   redoStack: string[]; // Array of JSON state snapshots (max 5)
   addNode: (parentId?: string, level?: 0 | 1 | 2) => void;
   updateNodeLabel: (nodeId: string, label: string) => void;
   toggleNodeCompleted: (nodeId: string) => void;
   deleteNode: (nodeId: string) => void;
+  deleteNodes: (nodeIds: string[]) => void; // Delete multiple nodes at once
   swapNodeSlots: (nodeId: string, targetSlot: number) => void;
   applyAutoLayout: () => void;
   pinNode: (nodeId: string) => void;
@@ -38,6 +40,7 @@ interface GraphState {
   setDragging: (isDragging: boolean) => void;
   setAutoFormatting: (isAutoFormatting: boolean) => void;
   setEditingNodeId: (nodeId: string | null) => void; // Set which node is being edited
+  setNodeToCure: (nodeId: string | null) => void; // Set which node needs to be cured
   deselectAllNodes: () => void; // Deselect all nodes
   saveStateSnapshot: () => void; // Save current state to undo stack
   undo: () => void;
@@ -173,12 +176,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   isDragging: false,
   isAutoFormatting: false,
   editingNodeId: null,
+  nodeToCure: null,
   undoStack: [],
   redoStack: [],
   
   setDragging: (isDragging) => set({ isDragging }),
   setAutoFormatting: (isAutoFormatting) => set({ isAutoFormatting }),
   setEditingNodeId: (nodeId) => set({ editingNodeId: nodeId }),
+  setNodeToCure: (nodeId) => set({ nodeToCure: nodeId }),
   
   // Save current state to undo stack (max 5 steps)
   saveStateSnapshot: () => {
@@ -313,9 +318,66 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       });
     }
 
+    // First, update slots based on current Y positions to respect manual reordering (same as applyAutoLayout)
+    // Group nodes by level
+    const nodesByLevel: { [level: number]: TaskNode[] } = {};
+    newNodes.forEach(node => {
+      const nodeLevel = node.data.level;
+      if (!nodesByLevel[nodeLevel]) {
+        nodesByLevel[nodeLevel] = [];
+      }
+      nodesByLevel[nodeLevel].push(node);
+    });
+    
+    // For each level, sort by Y position and update slots (siblings are stacked vertically in horizontal layout)
+    // IMPORTANT: New nodes should always be placed at the bottom (highest slot)
+    const nodesWithUpdatedSlots = newNodes.map(node => {
+      const nodesAtLevel = nodesByLevel[node.data.level];
+      // Separate existing nodes from the new node
+      const existingNodes = nodesAtLevel.filter(n => n.id !== newNode.id);
+      const isNewNode = node.id === newNode.id;
+      
+      if (isNewNode) {
+        // New node always gets the highest slot (bottom position)
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            slot: nodesAtLevel.length - 1, // Highest slot = bottom position
+          },
+        };
+      } else {
+        // Existing nodes: sort by current Y position (top to bottom for siblings)
+        const sortedByPosition = [...existingNodes].sort((a, b) => a.position.y - b.position.y);
+        // Find this node's updated slot based on its position
+        const updatedSlot = sortedByPosition.findIndex(n => n.id === node.id);
+        
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            slot: updatedSlot >= 0 ? updatedSlot : node.data.slot,
+          },
+        };
+      }
+    });
+
     // Apply auto layout after adding node so it appears in the correct position
-    const layoutedNodes = calculateLayout(newNodes, newEdges);
-    set({ nodes: layoutedNodes, edges: newEdges });
+    const layoutedNodes = calculateLayout(nodesWithUpdatedSlots, newEdges);
+    
+    // Enable smooth transitions for adding new node (same as auto-format)
+    set({ isAutoFormatting: true, nodes: layoutedNodes, edges: newEdges });
+    
+    // WORKAROUND: Signal GraphView to "cure" this node by simulating a drag
+    // GraphView will use React Flow's setNodes directly (like a real drag) to trigger edge recalculation
+    setTimeout(() => {
+      set({ nodeToCure: newNode.id });
+    }, 10); // Reduced delay for faster animation
+    
+    // Disable auto-formatting state after animation completes (400ms for smooth transition)
+    setTimeout(() => {
+      set({ isAutoFormatting: false });
+    }, 400);
   },
 
   updateNodeLabel: (nodeId, label) => {
@@ -341,6 +403,10 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   deleteNode: (nodeId) => {
+    get().deleteNodes([nodeId]);
+  },
+
+  deleteNodes: (nodeIds) => {
     get().saveStateSnapshot(); // Save state before action
     const nodes = get().nodes;
     const edges = get().edges;
@@ -350,13 +416,18 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       return [id, ...children.flatMap(findDescendants)];
     };
 
-    const nodesToDelete = findDescendants(nodeId);
+    // Collect all nodes to delete (including descendants of each selected node)
+    const allNodesToDelete = new Set<string>();
+    nodeIds.forEach(nodeId => {
+      const descendants = findDescendants(nodeId);
+      descendants.forEach(id => allNodesToDelete.add(id));
+    });
 
     set({
-      nodes: nodes.filter(n => !nodesToDelete.includes(n.id)),
+      nodes: nodes.filter(n => !allNodesToDelete.has(n.id)),
       edges: edges.filter(e => 
-        !nodesToDelete.includes(e.source) && 
-        !nodesToDelete.includes(e.target)
+        !allNodesToDelete.has(e.source) && 
+        !allNodesToDelete.has(e.target)
       ),
     });
   },

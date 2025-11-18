@@ -62,7 +62,7 @@ const Topbar: FC = () => {
     setIsMenuOpen(false);
   };
 
-  // Handle keyboard shortcuts for undo/redo
+  // Handle keyboard shortcuts for undo/redo and auto-format
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       // Check if we're editing a node (textarea is focused)
@@ -70,11 +70,13 @@ const Topbar: FC = () => {
       
       // Only handle shortcuts if we're NOT editing
       if (!isEditingNode) {
+        const store = useGraphStore.getState();
+        
         // Undo: Ctrl+Z (or Cmd+Z on Mac)
         if ((event.ctrlKey || event.metaKey) && event.key === 'z' && !event.shiftKey) {
           event.preventDefault();
-          if (canUndo()) {
-            undo();
+          if (store.canUndo()) {
+            store.undo();
           }
         }
         
@@ -84,16 +86,23 @@ const Topbar: FC = () => {
           ((event.ctrlKey || event.metaKey) && event.key === 'z' && event.shiftKey)
         ) {
           event.preventDefault();
-          if (canRedo()) {
-            redo();
+          if (store.canRedo()) {
+            store.redo();
           }
+        }
+        
+        // Auto-format: Shift+A (check for both 'A' and 'a' to handle different keyboard layouts)
+        if (event.shiftKey && (event.key === 'A' || event.key === 'a')) {
+          event.preventDefault();
+          event.stopPropagation();
+          store.applyAutoLayout();
         }
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [undo, redo, canUndo, canRedo]);
+    window.addEventListener('keydown', handleKeyDown, true); // Use capture phase
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, []); // Empty dependency array - we access the store directly inside
 
   return (
     <div style={{
@@ -231,6 +240,7 @@ const Topbar: FC = () => {
 
         <button
           onClick={applyAutoLayout}
+          title="Auto Format (Shift+A)"
           style={{
             padding: '10px 20px',
             backgroundColor: colors.neutral.gray100,
