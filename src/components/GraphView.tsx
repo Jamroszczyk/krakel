@@ -23,7 +23,7 @@ const CustomControls: FC = () => {
   const controlsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    let timeoutId: NodeJS.Timeout | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     let fitViewButton: HTMLButtonElement | null = null;
 
     const findAndOverrideFitViewButton = () => {
@@ -75,7 +75,7 @@ const nodeTypes = { editableNode: EditableNode };
 
 const GraphView: FC = () => {
   const { fitView } = useReactFlow();
-  const { nodes: storeNodes, edges: storeEdges, setNodes: setStoreNodes, setEdges: setStoreEdges, deleteNode, deleteNodes, setDragging, isAutoFormatting, editingNodeId, saveStateSnapshot, nodeToCure, setNodeToCure } = useGraphStore();
+  const { nodes: storeNodes, edges: storeEdges, setNodes: setStoreNodes, setEdges: setStoreEdges, deleteNodes, setDragging, isAutoFormatting, editingNodeId, saveStateSnapshot, nodeToCure, setNodeToCure } = useGraphStore();
   
   // CRITICAL: Use React Flow's optimized hooks for smooth rendering
   const [nodes, setNodes, onNodesChange] = useNodesState(storeNodes);
@@ -322,7 +322,7 @@ const GraphView: FC = () => {
           } as React.MouseEvent;
           
           // Call onNodeDragStart to initialize drag state (exactly like manual drag)
-          onNodeDragStart(fakeEvent as any, nodeToMove);
+          onNodeDragStart(fakeEvent as any, nodeToMove, nodes);
           
           // Move immediately (no extra frame delay) - move the node exactly 1px to the right
           const movedNode = {
@@ -332,19 +332,18 @@ const GraphView: FC = () => {
           
           // CRITICAL: Update through React Flow's setNodes to trigger edge recalculation
           // This is what happens during a real drag - React Flow updates the node and recalculates edges
-          setNodes((nds) =>
-            nds.map((n) =>
-              n.id === nodeToCure
-                ? movedNode
-                : n
-            )
+          const updatedNodes = nodes.map((n) =>
+            n.id === nodeToCure
+              ? movedNode
+              : n
           );
+          setNodes(updatedNodes);
           
           // Also call onNodeDrag to handle descendant movement (if any)
-          onNodeDrag(fakeEvent as any, movedNode);
+          onNodeDrag(fakeEvent as any, movedNode, updatedNodes);
           
           // Finish the drag immediately (no extra frame delay)
-          onNodeDragStop(fakeEvent as any, movedNode);
+          onNodeDragStop(fakeEvent as any, movedNode, updatedNodes);
           
           // Clear the cure flag immediately
           setNodeToCure(null);
@@ -465,67 +464,89 @@ const GraphView: FC = () => {
             style={{
               backgroundColor: colors.neutral.white,
               borderRadius: '16px',
-              padding: '32px',
               maxWidth: '500px',
               width: '90%',
+              maxHeight: '90vh',
               boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
               position: 'relative',
+              display: 'flex',
+              flexDirection: 'column',
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 style={{
-              fontSize: '24px',
-              fontWeight: 'bold',
-              color: colors.neutral.gray900,
-              marginBottom: '16px',
-              marginTop: 0,
-            }}>
-              {deletionModal.nodeIds.length === 1 ? 'Delete Node?' : `Delete ${deletionModal.nodeIds.length} Nodes?`}
-            </h2>
-            
-            <div style={{
-              fontSize: '16px',
-              lineHeight: '1.6',
-              color: colors.neutral.gray700,
-              marginBottom: '24px',
-            }}>
-              {deletionModal.nodeIds.length === 1 ? (
-                <p style={{ margin: 0 }}>
-                  Are you sure you want to delete <strong>"{deletionModal.nodeLabels[0]}"</strong>?
-                  {deletionModal.totalChildCount > 0 && (
-                    <>
-                      <br /><br />
-                      All {deletionModal.totalChildCount} {deletionModal.totalChildCount === 1 ? 'child' : 'children'} of this node will also be removed.
-                    </>
-                  )}
-                </p>
-              ) : (
-                <>
-                  <p style={{ margin: 0, marginBottom: '16px' }}>
-                    Are you sure you want to delete <strong>{deletionModal.nodeIds.length} nodes</strong>?
+            <div style={{ padding: '32px', paddingBottom: '16px' }}>
+              <h2 style={{
+                fontSize: '24px',
+                fontWeight: 'bold',
+                color: colors.neutral.gray900,
+                marginBottom: '16px',
+                marginTop: 0,
+              }}>
+                {deletionModal.nodeIds.length === 1 ? 'Delete Node?' : `Delete ${deletionModal.nodeIds.length} Nodes?`}
+              </h2>
+              
+              <div style={{
+                fontSize: '16px',
+                lineHeight: '1.6',
+                color: colors.neutral.gray700,
+              }}>
+                {deletionModal.nodeIds.length === 1 ? (
+                  <p style={{ margin: 0 }}>
+                    Are you sure you want to delete <strong>"{deletionModal.nodeLabels[0]}"</strong>?
                     {deletionModal.totalChildCount > 0 && (
                       <>
                         <br /><br />
-                        All {deletionModal.totalChildCount} {deletionModal.totalChildCount === 1 ? 'child' : 'children'} of these nodes will also be removed.
+                        All {deletionModal.totalChildCount} {deletionModal.totalChildCount === 1 ? 'child' : 'children'} of this node will also be removed.
                       </>
                     )}
                   </p>
-                  <div style={{ fontSize: '14px', color: colors.neutral.gray600, marginTop: '8px' }}>
-                    Nodes to delete:
-                    <ul style={{ marginTop: '8px', paddingLeft: '20px' }}>
-                      {deletionModal.nodeLabels.map((label, idx) => (
-                        <li key={idx}>{label}</li>
-                      ))}
-                    </ul>
-                  </div>
-                </>
-              )}
+                ) : (
+                  <>
+                    <p style={{ margin: 0, marginBottom: '16px' }}>
+                      Are you sure you want to delete <strong>{deletionModal.nodeIds.length} nodes</strong>?
+                      {deletionModal.totalChildCount > 0 && (
+                        <>
+                          <br /><br />
+                          All {deletionModal.totalChildCount} {deletionModal.totalChildCount === 1 ? 'child' : 'children'} of these nodes will also be removed.
+                        </>
+                      )}
+                    </p>
+                    <div style={{ fontSize: '14px', color: colors.neutral.gray600, marginTop: '8px' }}>
+                      Nodes to delete:
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
+            
+            {/* Scrollable list area */}
+            {deletionModal.nodeIds.length > 1 && (
+              <div style={{
+                overflowY: 'auto',
+                maxHeight: '300px',
+                paddingLeft: '32px',
+                paddingRight: '32px',
+                paddingBottom: '16px',
+              }}>
+                <ul style={{ 
+                  marginTop: '8px', 
+                  paddingLeft: '20px',
+                  marginBottom: 0,
+                }}>
+                  {deletionModal.nodeLabels.map((label, idx) => (
+                    <li key={idx} style={{ marginBottom: '4px' }}>{label}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             
             <div style={{
               display: 'flex',
               gap: '12px',
               justifyContent: 'flex-end',
+              padding: '32px',
+              paddingTop: '16px',
+              borderTop: '1px solid ' + colors.neutral.gray200,
             }}>
               <button
                 onClick={() => setDeletionModal(null)}

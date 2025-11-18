@@ -294,10 +294,12 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       }
     }
     
+    // New node will be positioned by the layout engine
+    // The layout engine will use the parent's current position as reference when useOriginalPositions is true
     const newNode: TaskNode = {
       id: nanoid(),
       type: 'editableNode',
-      position: { x: 0, y: 0 },
+      position: { x: 0, y: 0 }, // Temporary position, will be set by layout engine
       data: { label: 'New Task', level, slot: newSlot },
     };
 
@@ -363,7 +365,18 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     });
 
     // Apply auto layout after adding node so it appears in the correct position
-    const layoutedNodes = calculateLayout(nodesWithUpdatedSlots, newEdges);
+    // Preserve X position of roots, allow Y to adjust for vertical spacing (so roots can move to avoid overlap)
+    // When adding a child, preserveParentId ensures the parent's exact position (X and Y) is maintained
+    // Use original positions as reference so children are positioned relative to parent's current position
+    // Only Auto Format (Shift+A) will reposition all roots into the auto layout
+    const layoutedNodes = calculateLayout(nodesWithUpdatedSlots, newEdges, {
+      preserveRootPosition: true,
+      preserveRootXOnly: true, // Preserve X only, allow Y to adjust for vertical spacing
+      originalNodes: nodes, // Pass original nodes to calculate offset
+      preserveRootId: null, // null = preserve all root positions
+      useOriginalPositions: true, // Use original positions as reference for children positioning
+      preserveParentId: parentId || null, // Preserve the parent's position when adding a child
+    });
     
     // Enable smooth transitions for adding new node (same as auto-format)
     set({ isAutoFormatting: true, nodes: layoutedNodes, edges: newEdges });

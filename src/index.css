@@ -48,14 +48,7 @@ html, body {
   pointer-events: none;
 }
 
-.react-flow__edge path {
-  /* Removed transition to prevent edges from lagging behind nodes during drag */
-}
-
 /* Edge markers (arrows) - no transition for instant updates during drag */
-.react-flow__edgemarker path {
-  /* Removed transition to prevent markers from lagging behind nodes during drag */
-}
 
 /* Make selection box more visible */
 .react-flow__selection {
