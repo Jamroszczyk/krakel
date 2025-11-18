@@ -13,6 +13,7 @@ const EditableNode: FC<NodeProps> = ({ id, data, selected }) => {
   const addNode = useGraphStore(state => state.addNode);
   const pinNode = useGraphStore(state => state.pinNode);
   const deselectAllNodes = useGraphStore(state => state.deselectAllNodes);
+  const setEditingNodeId = useGraphStore(state => state.setEditingNodeId);
   
   // PERFORMANCE FIX: Use selectors to minimize re-renders
   const pinnedNodeIds = useGraphStore(state => state.pinnedNodeIds);
@@ -118,16 +119,20 @@ const EditableNode: FC<NodeProps> = ({ id, data, selected }) => {
   useEffect(() => {
     if (isEditing && inputRef.current) {
       inputRef.current.focus();
-      inputRef.current.select();
+      // Position cursor at the end of the text instead of selecting all
+      const length = inputRef.current.value.length;
+      inputRef.current.setSelectionRange(length, length);
     }
   }, [isEditing]);
 
   const handleDoubleClick = () => {
     setIsEditing(true);
+    setEditingNodeId(id); // Notify store that this node is being edited
   };
 
   const handleBlur = () => {
     setIsEditing(false);
+    setEditingNodeId(null); // Clear editing state
     updateNodeLabel(id, localLabel);
   };
 
@@ -139,12 +144,15 @@ const EditableNode: FC<NodeProps> = ({ id, data, selected }) => {
     if (e.key === 'Escape') {
       setLocalLabel(data.label);
       setIsEditing(false);
+      setEditingNodeId(null); // Clear editing state
     }
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
+    // If editing, prevent all mouse events from propagating to prevent dragging
     if (isEditing) {
       e.stopPropagation();
+      e.preventDefault();
     }
   };
 
@@ -320,6 +328,12 @@ const EditableNode: FC<NodeProps> = ({ id, data, selected }) => {
         }}
         onDoubleClick={handleDoubleClick}
         onMouseDown={handleMouseDown}
+        onMouseMove={(e) => {
+          // Prevent drag when editing
+          if (isEditing) {
+            e.stopPropagation();
+          }
+        }}
       >
       {/* Invisible handles for edges - required by ReactFlow */}
       {data.level > 0 && (
@@ -433,6 +447,16 @@ const EditableNode: FC<NodeProps> = ({ id, data, selected }) => {
             onFocus={() => {
               // Deselect any selected nodes when focusing on text input
               deselectAllNodes();
+              // Ensure editing state is set (in case textarea regains focus)
+              setEditingNodeId(id);
+            }}
+            onMouseDown={(e) => {
+              // Stop propagation to prevent node drag from starting
+              e.stopPropagation();
+            }}
+            onMouseMove={(e) => {
+              // Stop propagation to prevent any drag behavior
+              e.stopPropagation();
             }}
             onBlur={handleBlur}
             onKeyDown={handleKeyDown}

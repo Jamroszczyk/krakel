@@ -20,6 +20,7 @@ interface GraphState {
   batchTitle: string;
   isDragging: boolean; // PERFORMANCE: Track dragging state to disable expensive operations
   isAutoFormatting: boolean; // Track auto-formatting state to enable smooth transitions
+  editingNodeId: string | null; // Track which node is currently being edited (to disable dragging/panning)
   undoStack: string[]; // Array of JSON state snapshots (max 5)
   redoStack: string[]; // Array of JSON state snapshots (max 5)
   addNode: (parentId?: string, level?: 0 | 1 | 2) => void;
@@ -36,6 +37,7 @@ interface GraphState {
   setBatchTitle: (title: string) => void;
   setDragging: (isDragging: boolean) => void;
   setAutoFormatting: (isAutoFormatting: boolean) => void;
+  setEditingNodeId: (nodeId: string | null) => void; // Set which node is being edited
   deselectAllNodes: () => void; // Deselect all nodes
   saveStateSnapshot: () => void; // Save current state to undo stack
   undo: () => void;
@@ -170,11 +172,13 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   batchTitle: 'Current Batch',
   isDragging: false,
   isAutoFormatting: false,
+  editingNodeId: null,
   undoStack: [],
   redoStack: [],
   
   setDragging: (isDragging) => set({ isDragging }),
   setAutoFormatting: (isAutoFormatting) => set({ isAutoFormatting }),
+  setEditingNodeId: (nodeId) => set({ editingNodeId: nodeId }),
   
   // Save current state to undo stack (max 5 steps)
   saveStateSnapshot: () => {
@@ -493,6 +497,11 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       const { nodes, edges, pinnedNodeIds = [], batchTitle = 'Current Batch' } = JSON.parse(json);
       // Clear undo/redo stacks when loading from JSON
       set({ nodes, edges, pinnedNodeIds, batchTitle, undoStack: [], redoStack: [] });
+      // Automatically apply auto-layout after loading to format the nodes
+      // Use setTimeout to ensure state is fully updated before applying layout
+      setTimeout(() => {
+        get().applyAutoLayout();
+      }, 0);
     } catch (error) {
       console.error('Failed to load JSON:', error);
     }

@@ -17,12 +17,65 @@ import { colors } from '../theme/colors';
 import { PINBOARD_HEIGHT } from './Pinboard';
 import type { TaskNode } from '../store/graphStore';
 
+// Custom Controls component that adds smooth animation to fit view button
+const CustomControls: FC = () => {
+  const { fitView } = useReactFlow();
+  const controlsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let timeoutId: NodeJS.Timeout | null = null;
+    let fitViewButton: HTMLButtonElement | null = null;
+
+    const findAndOverrideFitViewButton = () => {
+      const controlsElement = controlsRef.current;
+      if (!controlsElement) {
+        timeoutId = setTimeout(findAndOverrideFitViewButton, 50);
+        return;
+      }
+
+      // Find all buttons - fit view is typically the 3rd button (index 2)
+      const buttons = controlsElement.querySelectorAll('button');
+      if (buttons.length > 2) {
+        fitViewButton = buttons[2] as HTMLButtonElement;
+      }
+      
+      if (!fitViewButton) {
+        timeoutId = setTimeout(findAndOverrideFitViewButton, 50);
+        return;
+      }
+
+      // Override the click handler to use smooth animation
+      const handleFitViewClick = (e: MouseEvent) => {
+        e.stopPropagation();
+        fitView({ padding: 0.2, duration: 500 });
+      };
+
+      fitViewButton.addEventListener('click', handleFitViewClick, true);
+
+      return () => {
+        fitViewButton?.removeEventListener('click', handleFitViewClick, true);
+      };
+    };
+
+    const cleanup = findAndOverrideFitViewButton();
+
+    return () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      cleanup?.();
+    };
+  }, [fitView]);
+
+  return <div ref={controlsRef}><Controls /></div>;
+};
+
 // Move nodeTypes outside component to prevent recreation
 const nodeTypes = { editableNode: EditableNode };
 
 const GraphView: FC = () => {
   const { fitView } = useReactFlow();
-  const { nodes: storeNodes, edges: storeEdges, setNodes: setStoreNodes, setEdges: setStoreEdges, deleteNode, setDragging, isAutoFormatting, saveStateSnapshot } = useGraphStore();
+  const { nodes: storeNodes, edges: storeEdges, setNodes: setStoreNodes, setEdges: setStoreEdges, deleteNode, setDragging, isAutoFormatting, editingNodeId, saveStateSnapshot } = useGraphStore();
   
   // CRITICAL: Use React Flow's optimized hooks for smooth rendering
   const [nodes, setNodes, onNodesChange] = useNodesState(storeNodes);
@@ -33,12 +86,17 @@ const GraphView: FC = () => {
   const skipSyncRef = useRef(false);
   
   // Sync React Flow state with Zustand store when store updates
+  // Also set draggable: false for the node being edited
   useEffect(() => {
     if (!skipSyncRef.current) {
-      setNodes(storeNodes);
+      const nodesWithDraggable = storeNodes.map(node => ({
+        ...node,
+        draggable: editingNodeId === node.id ? false : undefined, // Disable dragging for editing node
+      }));
+      setNodes(nodesWithDraggable);
     }
     skipSyncRef.current = false;
-  }, [storeNodes, setNodes]);
+  }, [storeNodes, setNodes, editingNodeId]);
   
   useEffect(() => {
     setEdges(storeEdges);
@@ -133,6 +191,11 @@ const GraphView: FC = () => {
 
   // CRITICAL: onNodeDragStart - capture initial positions of parent and all children
   const onNodeDragStart: NodeDragHandler = useCallback((_event, node) => {
+    // Prevent dragging if this node is being edited (double check)
+    if (editingNodeId === node.id || node.draggable === false) {
+      return;
+    }
+    
     isDraggingRef.current = true;
     setDragging(true); // PERFORMANCE: Set global dragging state to disable expensive operations
     // Save state snapshot before drag starts for undo/redo
@@ -157,12 +220,12 @@ const GraphView: FC = () => {
       }
     });
     
-    setDraggedNode({ 
+      setDraggedNode({ 
       id: node.id, 
       initialPosition: { x: node.position.x, y: node.position.y },
       initialChildPositions
     });
-    }, [nodes, getDescendants, setDragging, saveStateSnapshot, isAutoFormatting]);
+    }, [nodes, getDescendants, setDragging, saveStateSnapshot, isAutoFormatting, editingNodeId]);
 
   // CRITICAL: onNodeDrag - Use absolute positioning based on initial positions
   // This prevents accumulation errors from incremental updates
@@ -277,8 +340,9 @@ const GraphView: FC = () => {
         onNodeDrag={onNodeDrag}
         onNodeDragStop={onNodeDragStop}
         nodeDragThreshold={5}
+        panOnDrag={editingNodeId === null ? [1, 2] : false} // Disable panning when any node is being edited
         fitView
-        fitViewOptions={{ padding: 0.2 }}
+        fitViewOptions={{ padding: 0.2, duration: 500 }} // 500ms smooth animation for fit view
         minZoom={0.1}
         maxZoom={2}
         defaultViewport={{ x: 0, y: 0, zoom: 1 }}
@@ -298,7 +362,7 @@ const GraphView: FC = () => {
           gap={16} 
           size={1}
         />
-        <Controls />
+        <CustomControls />
         <MiniMap
           nodeColor={() => colors.secondary.blue}
           maskColor="rgba(0, 0, 0, 0.1)"
