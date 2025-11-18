@@ -84,6 +84,7 @@ const GraphView: FC = () => {
   // Track if we're currently dragging to prevent store sync during drag
   const isDraggingRef = useRef(false);
   const skipSyncRef = useRef(false);
+  const skipEdgesSyncRef = useRef(false);
   
   // Sync React Flow state with Zustand store when store updates
   // Also set draggable: false for the node being edited
@@ -98,9 +99,29 @@ const GraphView: FC = () => {
     skipSyncRef.current = false;
   }, [storeNodes, setNodes, editingNodeId]);
   
+  // Sync store edges to React Flow edges
   useEffect(() => {
-    setEdges(storeEdges);
+    if (!skipEdgesSyncRef.current) {
+      skipEdgesSyncRef.current = true; // Prevent reverse sync
+      setEdges(storeEdges);
+      // Reset after a tick to allow future syncs
+      setTimeout(() => {
+        skipEdgesSyncRef.current = false;
+      }, 0);
+    }
   }, [storeEdges, setEdges]);
+  
+  // Sync React Flow edges to Zustand store (after React Flow updates)
+  useEffect(() => {
+    if (!skipEdgesSyncRef.current) {
+      skipEdgesSyncRef.current = true; // Prevent reverse sync
+      setStoreEdges(edges);
+      // Reset after a tick to allow future syncs
+      setTimeout(() => {
+        skipEdgesSyncRef.current = false;
+      }, 0);
+    }
+  }, [edges, setStoreEdges]);
   
   // CRITICAL: Track dragged node and initial positions for absolute positioning
   const [draggedNode, setDraggedNode] = useState<{ 
@@ -335,19 +356,14 @@ const GraphView: FC = () => {
     }
   }, [nodeToCure, nodes, onNodeDragStart, onNodeDrag, onNodeDragStop, setNodes, setNodeToCure]);
 
-  // Wrap onEdgesChange to sync to Zustand store
+  // Wrap onEdgesChange - store sync happens in useEffect
   const handleEdgesChange: OnEdgesChange = useCallback(
     (changes) => {
       // Let React Flow's optimized onEdgesChange handle the update
+      // The useEffect watching 'edges' will sync to Zustand store
       onEdgesChange(changes);
-      
-      // Sync to Zustand store
-      setEdges((currentEdges) => {
-        setStoreEdges(currentEdges);
-        return currentEdges;
-      });
     },
-    [onEdgesChange, setEdges, setStoreEdges]
+    [onEdgesChange]
   );
 
   return (
