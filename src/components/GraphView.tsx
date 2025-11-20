@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useRef, type FC } from 'react';
+import { useCallback, useEffect, useState, useRef, useMemo, type FC } from 'react';
 import ReactFlow, {
   Background,
   Controls,
@@ -9,6 +9,7 @@ import ReactFlow, {
   type OnNodesChange,
   type OnEdgesChange,
   type NodeDragHandler,
+  type Edge,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import EditableNode from './EditableNode';
@@ -16,6 +17,7 @@ import { useGraphStore } from '../store/graphStore';
 import { colors } from '../theme/colors';
 import { PINBOARD_HEIGHT } from './Pinboard';
 import type { TaskNode } from '../store/graphStore';
+import { calculateNodeProgress } from '../utils/progressCalculation';
 
 // Custom Controls component that adds smooth animation to fit view button
 const CustomControls: FC = () => {
@@ -127,17 +129,51 @@ const GraphView: FC = () => {
     skipSyncRef.current = false;
   }, [storeNodes, setNodes, editingNodeId]);
   
-  // Sync store edges to React Flow edges
+  // Helper function to check if a node is completed (leaf node) or has 100% progress (node with children)
+  const isNodeCompleted = useCallback((node: TaskNode, nodes: TaskNode[], edges: Edge[]): boolean => {
+    // Check if node has children
+    const hasChildren = edges.some(e => e.source === node.id);
+    
+    if (!hasChildren) {
+      // Leaf node: check if completed
+      return node.data.completed === true;
+    } else {
+      // Node with children: check if progress is 100%
+      const progress = calculateNodeProgress(node.id, nodes, edges);
+      return progress === 1;
+    }
+  }, []);
+
+  // Compute edges with updated colors based on target node completion status
+  const edgesWithColors = useMemo(() => {
+    return storeEdges.map(edge => {
+      const targetNode = storeNodes.find(n => n.id === edge.target);
+      if (!targetNode) return edge;
+      
+      const isCompleted = isNodeCompleted(targetNode, storeNodes, storeEdges);
+      const edgeColor = isCompleted ? colors.primary.main : colors.edge;
+      
+      return {
+        ...edge,
+        style: {
+          ...edge.style,
+          stroke: edgeColor,
+        },
+      };
+    });
+  }, [storeEdges, storeNodes, isNodeCompleted]);
+
+  // Sync store edges to React Flow edges (with updated colors)
   useEffect(() => {
     if (!skipEdgesSyncRef.current) {
       skipEdgesSyncRef.current = true; // Prevent reverse sync
-      setEdges(storeEdges);
+      setEdges(edgesWithColors);
       // Reset after a tick to allow future syncs
       setTimeout(() => {
         skipEdgesSyncRef.current = false;
       }, 0);
     }
-  }, [storeEdges, setEdges]);
+  }, [edgesWithColors, setEdges]);
   
   // Sync React Flow edges to Zustand store (after React Flow updates)
   useEffect(() => {
@@ -522,6 +558,11 @@ const GraphView: FC = () => {
           
           .auto-formatting .react-flow__edgemarker path {
             transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important;
+          }
+          
+          /* Smooth transition for edge color changes */
+          .react-flow__edge-path {
+            transition: stroke 0.3s ease-in-out;
           }
         `}
       </style>
