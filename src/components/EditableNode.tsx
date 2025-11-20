@@ -3,7 +3,12 @@ import { Handle, Position, type NodeProps } from 'reactflow';
 import { useGraphStore } from '../store/graphStore';
 import { colors } from '../theme/colors';
 
-const EditableNode: FC<NodeProps> = ({ id, data, selected }) => {
+interface EditableNodeProps extends NodeProps {
+  isDragOver?: boolean;
+  isBeingDragged?: boolean;
+}
+
+const EditableNode: FC<EditableNodeProps> = ({ id, data, selected, isDragOver = false, isBeingDragged = false }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [localLabel, setLocalLabel] = useState(data.label);
   const [isHovered, setIsHovered] = useState(false);
@@ -337,16 +342,17 @@ const EditableNode: FC<NodeProps> = ({ id, data, selected }) => {
       >
       {/* Invisible handles for edges - required by ReactFlow */}
       {/* Target handle on left (incoming edges from parent) */}
-      {data.level > 0 && (
-        <Handle 
-          type="target" 
-          position={Position.Left} 
-          style={{ 
-            opacity: 0,
-            pointerEvents: 'none',
-          }} 
-        />
-      )}
+      {/* Always render the handle, even for root nodes, so edges can be created */}
+      {/* Hide it visually for root nodes (level 0) */}
+      <Handle 
+        type="target" 
+        position={Position.Left} 
+        id="target" 
+        style={{ 
+          opacity: data.level > 0 ? 0 : 0, // Always invisible, but always exists
+          pointerEvents: 'none',
+        }} 
+      />
 
       {/* Pin button for leaf nodes */}
       {!hasChildren && !isPinned && (

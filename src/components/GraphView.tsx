@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useRef, type FC } from 'react';
+import { useCallback, useEffect, useState, useRef, useMemo, type FC } from 'react';
 import ReactFlow, {
   Background,
   Controls,
@@ -70,12 +70,27 @@ const CustomControls: FC = () => {
   return <div ref={controlsRef}><Controls /></div>;
 };
 
-// Move nodeTypes outside component to prevent recreation
-const nodeTypes = { editableNode: EditableNode };
+// Create a context or store for drag-over state that nodes can access
+// For now, we'll use a module-level variable that's updated via refs
+let globalDragOverNodeId: string | null = null;
+let globalDraggedNodeId: string | null = null;
+
+// Stable nodeTypes - defined outside component to prevent recreation warnings
+const createNodeTypes = () => ({
+  editableNode: (props: any) => (
+    <EditableNode 
+      {...props} 
+      isDragOver={globalDragOverNodeId === props.id} 
+      isBeingDragged={globalDraggedNodeId === props.id} 
+    />
+  )
+});
+
+const nodeTypes = createNodeTypes();
 
 const GraphView: FC = () => {
-  const { fitView } = useReactFlow();
-  const { nodes: storeNodes, edges: storeEdges, setNodes: setStoreNodes, setEdges: setStoreEdges, deleteNodes, addNode, setDragging, isAutoFormatting, editingNodeId, saveStateSnapshot, nodeToCure, setNodeToCure } = useGraphStore();
+  const { fitView, screenToFlowPosition, getNodes } = useReactFlow();
+  const { nodes: storeNodes, edges: storeEdges, setNodes: setStoreNodes, setEdges: setStoreEdges, deleteNodes, addNode, setDragging, isAutoFormatting, editingNodeId, saveStateSnapshot, nodeToCure, setNodeToCure, moveNode, canMoveNode } = useGraphStore();
   
   // CRITICAL: Use React Flow's optimized hooks for smooth rendering
   const [nodes, setNodes, onNodesChange] = useNodesState(storeNodes);
@@ -85,6 +100,19 @@ const GraphView: FC = () => {
   const isDraggingRef = useRef(false);
   const skipSyncRef = useRef(false);
   const skipEdgesSyncRef = useRef(false);
+  
+  // Track drag-over state for drop target highlighting
+  const [dragOverNodeId, setDragOverNodeId] = useState<string | null>(null);
+  const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
+  
+  // Update global variables when state changes (for nodeTypes access)
+  useEffect(() => {
+    globalDragOverNodeId = dragOverNodeId;
+    globalDraggedNodeId = draggedNodeId;
+    // Force re-render of nodes by updating a dummy state or using React Flow's update mechanism
+    // Actually, we need to trigger a re-render. Let's use a key or force update.
+    // For now, the nodes will re-render when dragOverNodeId/draggedNodeId change via normal React flow
+  }, [dragOverNodeId, draggedNodeId]);
   
   // Sync React Flow state with Zustand store when store updates
   // Also set draggable: false for the node being edited
@@ -245,6 +273,7 @@ const GraphView: FC = () => {
     
     isDraggingRef.current = true;
     setDragging(true); // PERFORMANCE: Set global dragging state to disable expensive operations
+    setDraggedNodeId(node.id); // Track which node is being dragged
     // Save state snapshot before drag starts for undo/redo
     saveStateSnapshot();
     // Disable auto-formatting transitions if active (user started dragging during auto-format)
@@ -302,7 +331,54 @@ const GraphView: FC = () => {
         })
       );
     }
-  }, [draggedNode, setNodes]);
+    
+    // Check if dragging over another node (for drop target highlighting)
+    // Use React Flow's coordinate conversion to find node at cursor position
+    try {
+      const flowPosition = screenToFlowPosition({
+        x: _event.clientX,
+        y: _event.clientY,
+      });
+      
+      // Get all nodes from React Flow
+      const allNodes = getNodes();
+      
+      // Find node at this position
+      const targetNode = allNodes.find(n => {
+        if (n.id === node.id) return false; // Don't check self
+        
+        // Approximate node bounds (adjust based on your actual node size)
+        const nodeWidth = 200;
+        const nodeHeight = 60;
+        
+        return (
+          flowPosition.x >= n.position.x &&
+          flowPosition.x <= n.position.x + nodeWidth &&
+          flowPosition.y >= n.position.y &&
+          flowPosition.y <= n.position.y + nodeHeight
+        );
+      });
+      
+      if (targetNode) {
+        const canMove = canMoveNode(node.id, targetNode.id);
+        console.log('Drag over check:', { dragged: node.id, target: targetNode.id, canMove, flowPos: flowPosition, targetPos: targetNode.position });
+        if (canMove && dragOverNodeId !== targetNode.id) {
+          setDragOverNodeId(targetNode.id);
+        } else if (!canMove && dragOverNodeId !== null) {
+          setDragOverNodeId(null);
+        }
+      } else {
+        if (dragOverNodeId !== null) {
+          setDragOverNodeId(null);
+        }
+      }
+    } catch (e) {
+      console.error('Error in drag-over detection:', e);
+      if (dragOverNodeId !== null) {
+        setDragOverNodeId(null);
+      }
+    }
+  }, [draggedNode, setNodes, canMoveNode, dragOverNodeId, screenToFlowPosition, getNodes]);
   
   // Wrap onNodesChange - React Flow handles everything natively
   const handleNodesChange: OnNodesChange = useCallback(
@@ -315,15 +391,43 @@ const GraphView: FC = () => {
   );
   
   // Sync to store when drag stops - PERFORMANCE FIX: Only sync once after drag completes
-  const onNodeDragStop: NodeDragHandler = useCallback(() => {
+  const onNodeDragStop: NodeDragHandler = useCallback((_event, node) => {
     isDraggingRef.current = false;
+    
+    // Check if dropped on a valid target node
+    // Use global variables to get latest values (they're updated in useEffect)
+    const currentDragOver = globalDragOverNodeId;
+    const currentDragged = globalDraggedNodeId;
+    
+    console.log('Drag stop:', { 
+      currentDragged, 
+      currentDragOver, 
+      draggedNodeId,
+      dragOverNodeId,
+      canMove: currentDragOver && currentDragged ? canMoveNode(currentDragged, currentDragOver) : false 
+    });
+    
+    if (currentDragOver && currentDragged && canMoveNode(currentDragged, currentDragOver)) {
+      console.log('Moving node', currentDragged, 'to parent', currentDragOver);
+      // Move the node to the new parent
+      moveNode(currentDragged, currentDragOver);
+      setDragOverNodeId(null);
+      setDraggedNodeId(null);
+      setDraggedNode(null);
+      setDragging(false);
+      return; // Don't sync positions, moveNode handles layout
+    }
+    
+    // Reset drag-over state
+    setDragOverNodeId(null);
+    setDraggedNodeId(null);
     setDragging(false); // PERFORMANCE: Clear global dragging state
     // Sync to Zustand store ONCE after drag completes (not during drag)
     skipSyncRef.current = true; // Prevent sync loop
     setStoreNodes(nodes as TaskNode[]);
     // Note: State snapshot was saved on drag start, not here
     setDraggedNode(null);
-  }, [nodes, setStoreNodes, setDragging]);
+  }, [nodes, setStoreNodes, setDragging, dragOverNodeId, draggedNodeId, canMoveNode, moveNode]);
 
   // WORKAROUND: When a node needs to be "cured", directly call the drag handlers AND update through React Flow
   // This triggers the exact same code path as a manual drag, including edge recalculation
