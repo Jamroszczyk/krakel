@@ -198,6 +198,51 @@ const Chat: FC = () => {
   
   // LLM API URL - use Vite proxy to avoid CORS issues, can be overridden with env var
   const LLM_API_URL = import.meta.env.VITE_LLM_API_URL || '/api/lmstudio';
+  
+  // Track if LLM API is available (local hosting only)
+  const [isLLMAvailable, setIsLLMAvailable] = useState<boolean | null>(null); // null = checking, true = available, false = unavailable
+
+  // Health check function to test if LLM API is accessible
+  const checkLLMAvailability = useCallback(async () => {
+    try {
+      // Try to fetch the models endpoint as a health check
+      const response = await fetch(`${LLM_API_URL}/v1/models`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        // Add a timeout to avoid hanging
+        signal: AbortSignal.timeout(3000), // 3 second timeout
+      });
+      
+      if (response.ok) {
+        setIsLLMAvailable(true);
+        return true;
+      } else {
+        setIsLLMAvailable(false);
+        return false;
+      }
+    } catch (error) {
+      // Network error, CORS error, or timeout - API is not available
+      setIsLLMAvailable(false);
+      return false;
+    }
+  }, [LLM_API_URL]);
+
+  // Check LLM availability on mount and periodically
+  useEffect(() => {
+    // Initial check
+    checkLLMAvailability();
+    
+    // Set up periodic check every 5 seconds
+    const intervalId = setInterval(() => {
+      checkLLMAvailability();
+    }, 5000);
+    
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [checkLLMAvailability]);
 
   // Initialize Speech Recognition
   useEffect(() => {
@@ -366,7 +411,7 @@ const Chat: FC = () => {
   }, [isDragging, dragStart, constrainPosition]);
 
   const handleSend = async () => {
-    if (!input.trim() || isLoading || isRecording) return;
+    if (!input.trim() || isLoading || isRecording || isLLMAvailable === false) return;
 
     // Stop recording if active
     if (isRecording && recognition) {
@@ -573,6 +618,11 @@ const Chat: FC = () => {
   }, [stream, audioContext]);
 
   const toggleRecording = async () => {
+    if (isLLMAvailable === false) {
+      setError('This is a local hosting feature only and doesn\'t work in the web version');
+      return;
+    }
+    
     if (!recognition) {
       setError('Speech recognition not available in this browser');
       return;
@@ -636,12 +686,14 @@ const Chat: FC = () => {
 
   // Minimized view
   if (isMinimized) {
+    const isDisabled = isLLMAvailable === false;
+    
     return (
       <div
         ref={chatRef}
         onMouseDown={handleMouseDown}
         onClick={() => {
-          if (!hasDragged) {
+          if (!hasDragged && !isDisabled) {
             setIsMinimized(false);
           }
         }}
@@ -651,9 +703,10 @@ const Chat: FC = () => {
           top: `${position.y}px`,
           transform: 'translate(-50%, -50%)',
           zIndex: 1001,
-          cursor: isDragging ? 'grabbing' : 'pointer',
+          cursor: isDisabled ? 'not-allowed' : (isDragging ? 'grabbing' : 'pointer'),
           userSelect: 'none',
         }}
+        title={isDisabled ? 'This is a local hosting feature only and doesn\'t work in the web version' : undefined}
       >
         <div
           style={{
@@ -664,8 +717,9 @@ const Chat: FC = () => {
             display: 'flex',
             alignItems: 'center',
             gap: '12px',
-            border: `2px solid ${colors.secondary.blue}`,
+            border: `2px solid ${isDisabled ? colors.neutral.gray400 : colors.secondary.blue}`,
             minWidth: '160px',
+            opacity: isDisabled ? 0.5 : 1,
           }}
         >
           <div
@@ -673,8 +727,11 @@ const Chat: FC = () => {
               width: '12px',
               height: '12px',
               borderRadius: '50%',
-              backgroundColor: colors.secondary.blue,
+              backgroundColor: isDisabled 
+                ? colors.neutral.gray400 
+                : (isLLMAvailable === true ? colors.secondary.blue : colors.neutral.gray400),
               flexShrink: 0,
+              transition: 'background-color 0.3s',
             }}
           />
           <div
@@ -732,7 +789,19 @@ const Chat: FC = () => {
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div style={{ fontSize: '16px', fontWeight: '600' }}>AI Brain Dump</div>
+            <div style={{ fontSize: '16px', fontWeight: '600' }}>
+              AI Brain Dump
+              {isLLMAvailable === false && (
+                <span style={{ 
+                  fontSize: '12px', 
+                  color: 'rgba(255, 255, 255, 0.7)',
+                  marginLeft: '8px',
+                  fontStyle: 'italic'
+                }}>
+                  (Local only)
+                </span>
+              )}
+            </div>
             <select
               value={language}
               onChange={(e) => setLanguage(e.target.value as 'en-US' | 'de-DE')}
@@ -922,11 +991,19 @@ const Chat: FC = () => {
                      height: '180px',
                    }}
                  >
-                   <MorphingSphere 
-                     isRecording={isRecording} 
-                     audioLevel={audioLevel}
-                     onClick={isLoading ? () => {} : toggleRecording}
-                   />
+                  <div
+                    title={isLLMAvailable === false ? 'This is a local hosting feature only and doesn\'t work in the web version' : undefined}
+                    style={{
+                      opacity: isLLMAvailable === false ? 0.5 : 1,
+                      cursor: isLLMAvailable === false ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    <MorphingSphere 
+                      isRecording={isRecording} 
+                      audioLevel={audioLevel}
+                      onClick={isLoading || isLLMAvailable === false ? () => {} : toggleRecording}
+                    />
+                  </div>
                  </div>
 
                  {/* Recording Status - always reserve space */}
@@ -976,12 +1053,37 @@ const Chat: FC = () => {
                      display: 'flex',
                      alignItems: 'center',
                      justifyContent: 'center',
-                     opacity: (!isRecording && !input.trim()) ? 1 : 0,
+                     opacity: (!isRecording && !input.trim() && isLLMAvailable !== false) ? 1 : 0,
                      transition: 'opacity 0.2s ease',
                    }}
                  >
-                   Click the button and tell us what you have to do. Or start typing below.
+                   {isLLMAvailable === null 
+                     ? 'Checking LLM availability...'
+                     : 'Click the button and tell us what you have to do. Or start typing below.'}
                  </div>
+                 
+                 {/* Show message when LLM is not available */}
+                 {isLLMAvailable === false && (
+                   <div
+                     style={{
+                       fontSize: '13px',
+                       color: colors.neutral.gray500,
+                       maxWidth: '300px',
+                       textAlign: 'center',
+                       padding: '12px',
+                       backgroundColor: colors.neutral.gray50,
+                       borderRadius: '8px',
+                       border: `1px solid ${colors.neutral.gray200}`,
+                       marginTop: '8px',
+                     }}
+                   >
+                     This is a local hosting feature only and doesn't work in the web version.
+                     <br />
+                     <span style={{ fontSize: '12px', fontStyle: 'italic' }}>
+                       Requires LM Studio running on localhost:1234
+                     </span>
+                   </div>
+                 )}
                </div>
              </>
            )}
@@ -997,43 +1099,67 @@ const Chat: FC = () => {
              gap: '12px',
            }}
          >
-           <textarea
-             value={input}
-             onChange={(e) => setInput(e.target.value)}
-             onKeyDown={handleKeyDown}
-             placeholder={isRecording ? "Your speech will appear here..." : "Or type your thoughts here..."}
-             disabled={isLoading}
-             style={{
-               width: '100%',
-               padding: '12px 16px',
-               borderRadius: '12px',
-               border: `2px solid ${colors.neutral.gray200}`,
-               fontSize: '14px',
-               fontFamily: 'inherit',
-               resize: 'none',
-               minHeight: '80px',
-               maxHeight: '150px',
-               outline: 'none',
-               color: colors.neutral.gray800,
-               backgroundColor: colors.neutral.white,
-               lineHeight: '1.5',
-             }}
-             onFocus={(e) => {
-               e.currentTarget.style.borderColor = colors.secondary.blue;
-               e.currentTarget.style.boxShadow = `0 0 0 3px ${colors.secondary.blue}20`;
-             }}
-             onBlur={(e) => {
-               e.currentTarget.style.borderColor = colors.neutral.gray200;
-               e.currentTarget.style.boxShadow = 'none';
-             }}
-           />
+           {isLLMAvailable === false ? (
+             <div
+               style={{
+                 width: '100%',
+                 padding: '12px 16px',
+                 borderRadius: '12px',
+                 border: `2px solid ${colors.neutral.gray200}`,
+                 backgroundColor: colors.neutral.gray50,
+                 color: colors.neutral.gray500,
+                 fontSize: '14px',
+                 textAlign: 'center',
+                 cursor: 'not-allowed',
+                 minHeight: '80px',
+                 display: 'flex',
+                 alignItems: 'center',
+                 justifyContent: 'center',
+               }}
+               title="This is a local hosting feature only and doesn't work in the web version"
+             >
+               This feature requires a local LLM server (LM Studio) running on localhost:1234
+             </div>
+          ) : (
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={isRecording ? "Your speech will appear here..." : "Or type your thoughts here..."}
+              disabled={isLoading || isLLMAvailable !== true}
+               style={{
+                 width: '100%',
+                 padding: '12px 16px',
+                 borderRadius: '12px',
+                 border: `2px solid ${colors.neutral.gray200}`,
+                 fontSize: '14px',
+                 fontFamily: 'inherit',
+                 resize: 'none',
+                 minHeight: '80px',
+                 maxHeight: '150px',
+                 outline: 'none',
+                 color: colors.neutral.gray800,
+                 backgroundColor: colors.neutral.white,
+                 lineHeight: '1.5',
+               }}
+               onFocus={(e) => {
+                 e.currentTarget.style.borderColor = colors.secondary.blue;
+                 e.currentTarget.style.boxShadow = `0 0 0 3px ${colors.secondary.blue}20`;
+               }}
+               onBlur={(e) => {
+                 e.currentTarget.style.borderColor = colors.neutral.gray200;
+                 e.currentTarget.style.boxShadow = 'none';
+               }}
+             />
+           )}
            <button
-             onClick={handleSend}
-             disabled={!input.trim() || isLoading || isRecording}
+             onClick={isLLMAvailable === false ? () => {} : handleSend}
+             disabled={isLLMAvailable === false || isLoading || !input.trim() || isRecording}
+             title={isLLMAvailable === false ? 'This is a local hosting feature only and doesn\'t work in the web version' : undefined}
              style={{
                padding: '12px 24px',
                backgroundColor:
-                 !input.trim() || isLoading || isRecording
+                 isLLMAvailable === false || !input.trim() || isLoading || isRecording
                    ? colors.neutral.gray200
                    : colors.secondary.blue,
                color: colors.neutral.white,
@@ -1042,21 +1168,22 @@ const Chat: FC = () => {
                fontSize: '15px',
                fontWeight: '600',
                cursor:
-                 !input.trim() || isLoading || isRecording ? 'not-allowed' : 'pointer',
+                 isLLMAvailable === false || !input.trim() || isLoading || isRecording ? 'not-allowed' : 'pointer',
                transition: 'all 0.2s',
-               boxShadow: !input.trim() || isLoading || isRecording 
+               boxShadow: isLLMAvailable === false || !input.trim() || isLoading || isRecording 
                  ? 'none' 
                  : '0 4px 12px rgba(0, 0, 0, 0.15)',
+               opacity: isLLMAvailable === false ? 0.5 : 1,
              }}
              onMouseEnter={(e) => {
-               if (input.trim() && !isLoading && !isRecording) {
+               if (isLLMAvailable !== false && input.trim() && !isLoading && !isRecording) {
                  e.currentTarget.style.backgroundColor = colors.primary.main;
                  e.currentTarget.style.transform = 'translateY(-1px)';
                  e.currentTarget.style.boxShadow = '0 6px 16px rgba(0, 0, 0, 0.2)';
                }
              }}
              onMouseLeave={(e) => {
-               if (input.trim() && !isLoading && !isRecording) {
+               if (isLLMAvailable !== false && input.trim() && !isLoading && !isRecording) {
                  e.currentTarget.style.backgroundColor = colors.secondary.blue;
                  e.currentTarget.style.transform = 'translateY(0)';
                  e.currentTarget.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.15)';
