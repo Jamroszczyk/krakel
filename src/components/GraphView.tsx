@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useRef, useMemo, type FC } from 'react';
+import { useCallback, useEffect, useState, useRef, type FC } from 'react';
 import ReactFlow, {
   Background,
   Controls,
@@ -391,7 +391,7 @@ const GraphView: FC = () => {
   );
   
   // Sync to store when drag stops - PERFORMANCE FIX: Only sync once after drag completes
-  const onNodeDragStop: NodeDragHandler = useCallback((_event, node) => {
+  const onNodeDragStop: NodeDragHandler = useCallback((_event, _node) => {
     isDraggingRef.current = false;
     
     // Check if dropped on a valid target node

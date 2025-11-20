@@ -148,7 +148,7 @@ const CookieConsent: FC = () => {
               cursor: 'pointer',
               transition: 'background-color 0.2s',
             }}
-            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = colors.primary.dark}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = colors.primary.main}
             onMouseLeave={(e) => e.currentTarget.style.backgroundColor = colors.primary.main}
           >
             Accept

@@ -327,9 +327,14 @@ const EditableNode: FC<EditableNodeProps> = ({ id, data, selected, isDragOver = 
         style={{
           ...nodeStyle,
           position: 'relative',
-          border: hasChildren || (!hasChildren && data.completed)
+          border: isDragOver 
+            ? `3px solid ${colors.secondary.blue}`
+            : hasChildren || (!hasChildren && data.completed)
             ? `3px solid ${colors.neutral.gray200}`
             : selected ? `2px solid ${colors.secondary.blue}` : `2px solid ${colors.neutral.gray200}`,
+          boxShadow: isDragOver ? `0 0 20px ${colors.secondary.blue}40` : undefined,
+          transition: isDragOver ? 'all 0.2s ease' : undefined,
+          opacity: isBeingDragged ? 0.6 : 1,
         }}
         onDoubleClick={handleDoubleClick}
         onMouseDown={handleMouseDown}
