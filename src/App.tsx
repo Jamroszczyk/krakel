@@ -3,6 +3,7 @@ import GraphView from './components/GraphView';
 import Topbar from './components/Topbar';
 import Pinboard from './components/Pinboard';
 import Timer from './components/Timer';
+import Chat from './components/Chat';
 import CookieConsent from './components/CookieConsent';
 import './App.css';
 
@@ -16,6 +17,7 @@ function App() {
         </ReactFlowProvider>
         <Pinboard />
         <Timer />
+        <Chat />
       </div>
       <CookieConsent />
     </div>
