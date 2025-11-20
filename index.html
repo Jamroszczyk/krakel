@@ -5,6 +5,21 @@
     <link rel="icon" type="image/x-icon" href="/octopus_logo.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-Z33NYVMSE0"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      
+      // Set default consent to denied (will be updated by CookieConsent component)
+      gtag('consent', 'default', {
+        'analytics_storage': 'denied'
+      });
+      
+      gtag('config', 'G-Z33NYVMSE0');
+    </script>
+    
     <!-- Primary Meta Tags -->
     <title>Krakel - Interactive Node-Based Todo Graph for ADHD</title>
     <meta name="title" content="Krakel - Interactive Node-Based Todo Graph for ADHD" />
