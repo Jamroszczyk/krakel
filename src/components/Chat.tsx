@@ -2,6 +2,7 @@ import { type FC, useState, useRef, useEffect, useCallback } from 'react';
 import { colors } from '../theme/colors';
 import { PINBOARD_HEIGHT } from './Pinboard';
 import { useGraphStore } from '../store/graphStore';
+import { useUIStore } from '../store/uiStore';
 
 // Animated Checkbox Component for Success State
 const AnimatedCheckbox: FC = () => {
@@ -172,15 +173,44 @@ const MorphingSphere: FC<{ isRecording: boolean; audioLevel: number; onClick: ()
   );
 };
 
+const GRAPH_SYSTEM_PROMPT = `You convert a user's brain dump of tasks into a hierarchical to-do graph.
+
+Respond with ONLY a single raw JSON object. Do NOT include markdown code fences, explanations, comments, or any prose before or after the JSON.
+
+The JSON must have exactly this shape:
+{
+  "nodes": [
+    { "id": "n1", "label": "High level area or project", "level": 0, "slot": 0 },
+    { "id": "n2", "label": "A task under that area", "level": 1, "slot": 0 },
+    { "id": "n3", "label": "A subtask / detail", "level": 2, "slot": 0 }
+  ],
+  "edges": [
+    { "id": "e1", "source": "n1", "target": "n2" },
+    { "id": "e2", "source": "n2", "target": "n3" }
+  ]
+}
+
+Rules:
+- Use at most 3 levels: level 0 = broad categories/projects, level 1 = concrete tasks, level 2 = subtasks or details.
+- Every id must be a unique non-empty string. Reuse the exact same ids in the edges.
+- "slot" is a 0-based integer ordering among siblings that share the same parent (0, 1, 2, ...).
+- Each edge must connect a parent to a child exactly one level deeper: level 0 -> level 1, or level 1 -> level 2. Never skip a level and never connect same or descending levels.
+- Every level 1 and level 2 node must have exactly one incoming edge from its parent.
+- Keep labels short and actionable.
+- Output nothing except the JSON object.`;
+
 const Chat: FC = () => {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isMinimized, setIsMinimized] = useState(true);
+  const isChatOpen = useUIStore((state) => state.isChatOpen);
+  const closeChat = useUIStore((state) => state.closeChat);
+  const isMinimized = !isChatOpen;
   const [error, setError] = useState<string | null>(null);
   const [showSuccess, setShowSuccess] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [recognition, setRecognition] = useState<SpeechRecognition | null>(null);
   const [language, setLanguage] = useState<'en-US' | 'de-DE'>('en-US');
+  const [model, setModel] = useState<string>('qwen/qwen3-vl-8b');
   const [audioLevel, setAudioLevel] = useState(0); // For audio visualization
   const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
@@ -193,14 +223,14 @@ const Chat: FC = () => {
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-  const [hasDragged, setHasDragged] = useState(false);
   const chatRef = useRef<HTMLDivElement>(null);
   
   // LLM API URL - use Vite proxy to avoid CORS issues, can be overridden with env var
   const LLM_API_URL = import.meta.env.VITE_LLM_API_URL || '/api/lmstudio';
   
   // Track if LLM API is available (local hosting only)
-  const [isLLMAvailable, setIsLLMAvailable] = useState<boolean | null>(null); // null = checking, true = available, false = unavailable
+  const isLLMAvailable = useUIStore((state) => state.isLLMAvailable); // null = checking, true = available, false = unavailable
+  const setIsLLMAvailable = useUIStore((state) => state.setLLMAvailable);
 
   // Health check function to test if LLM API is accessible
   const checkLLMAvailability = useCallback(async () => {
@@ -375,7 +405,6 @@ const Chat: FC = () => {
     }
     
     setIsDragging(true);
-    setHasDragged(false);
     setDragStart({
       x: e.clientX - position.x,
       y: e.clientY - position.y,
@@ -385,7 +414,6 @@ const Chat: FC = () => {
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (isDragging) {
-        setHasDragged(true);
         const newPos = {
           x: e.clientX - dragStart.x,
           y: e.clientY - dragStart.y,
@@ -396,7 +424,6 @@ const Chat: FC = () => {
 
     const handleMouseUp = () => {
       setIsDragging(false);
-      setTimeout(() => setHasDragged(false), 100);
     };
 
     if (isDragging) {
@@ -427,13 +454,18 @@ const Chat: FC = () => {
     try {
       // Prepare the request body - only send the current user message
       const requestBody = {
-        model: 'qwen/qwen3-vl-8b',
+        model: model,
         messages: [
+          {
+            role: 'system',
+            content: GRAPH_SYSTEM_PROMPT,
+          },
           {
             role: 'user',
             content: userInput,
           },
         ],
+        temperature: 0.2,
         stream: false,
       };
 
@@ -467,6 +499,16 @@ const Chat: FC = () => {
         jsonString = jsonString.replace(/^```json\n?/, '').replace(/\n?```$/, '');
       } else if (jsonString.startsWith('```')) {
         jsonString = jsonString.replace(/^```\n?/, '').replace(/\n?```$/, '');
+      }
+
+      // Some models wrap the JSON in explanatory prose or reasoning. If so,
+      // fall back to extracting the outermost { ... } block.
+      if (!jsonString.startsWith('{')) {
+        const firstBrace = jsonString.indexOf('{');
+        const lastBrace = jsonString.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace > firstBrace) {
+          jsonString = jsonString.slice(firstBrace, lastBrace + 1);
+        }
       }
 
       // Parse the simplified JSON and reconstruct the full format
@@ -684,68 +726,9 @@ const Chat: FC = () => {
     }
   };
 
-  // Minimized view
+  // When closed, the entry point lives in the Topbar (see Topbar.tsx).
   if (isMinimized) {
-    const isDisabled = isLLMAvailable === false;
-    
-    return (
-      <div
-        ref={chatRef}
-        onMouseDown={handleMouseDown}
-        onClick={() => {
-          if (!hasDragged && !isDisabled) {
-            setIsMinimized(false);
-          }
-        }}
-        style={{
-          position: 'fixed',
-          left: `${position.x}px`,
-          top: `${position.y}px`,
-          transform: 'translate(-50%, -50%)',
-          zIndex: 1001,
-          cursor: isDisabled ? 'not-allowed' : (isDragging ? 'grabbing' : 'pointer'),
-          userSelect: 'none',
-        }}
-        title={isDisabled ? 'This is a local hosting feature only and doesn\'t work in the web version' : undefined}
-      >
-        <div
-          style={{
-            backgroundColor: colors.neutral.white,
-            borderRadius: '24px',
-            boxShadow: '0 4px 16px rgba(0, 0, 0, 0.2)',
-            padding: '12px 20px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-            border: `2px solid ${isDisabled ? colors.neutral.gray400 : colors.secondary.blue}`,
-            minWidth: '160px',
-            opacity: isDisabled ? 0.5 : 1,
-          }}
-        >
-          <div
-            style={{
-              width: '12px',
-              height: '12px',
-              borderRadius: '50%',
-              backgroundColor: isDisabled 
-                ? colors.neutral.gray400 
-                : (isLLMAvailable === true ? colors.secondary.blue : colors.neutral.gray400),
-              flexShrink: 0,
-              transition: 'background-color 0.3s',
-            }}
-          />
-          <div
-            style={{
-              fontSize: '14px',
-              fontWeight: '600',
-              color: colors.neutral.gray800,
-            }}
-          >
-             AI Brain Dump
-          </div>
-        </div>
-      </div>
-    );
+    return null;
   }
 
   return (
@@ -832,9 +815,42 @@ const Chat: FC = () => {
               <option value="en-US" style={{ backgroundColor: colors.secondary.blue, color: colors.neutral.white }}>EN</option>
               <option value="de-DE" style={{ backgroundColor: colors.secondary.blue, color: colors.neutral.white }}>DE</option>
             </select>
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              disabled={isLoading}
+              title="AI model"
+              style={{
+                padding: '4px 8px',
+                borderRadius: '6px',
+                border: `1px solid ${colors.neutral.white}40`,
+                backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                color: colors.neutral.white,
+                fontSize: '12px',
+                fontWeight: '600',
+                maxWidth: '150px',
+                cursor: isLoading ? 'not-allowed' : 'pointer',
+                outline: 'none',
+                transition: 'background-color 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                if (!isLoading) {
+                  e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.3)';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!isLoading) {
+                  e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
+                }
+              }}
+            >
+              <option value="qwen/qwen3-vl-8b" style={{ backgroundColor: colors.secondary.blue, color: colors.neutral.white }}>Default (qwen3-vl-8b)</option>
+              <option value="google/gemma-3-4b" style={{ backgroundColor: colors.secondary.blue, color: colors.neutral.white }}>google/gemma-3-4b</option>
+              <option value="openai/gpt-oss-20b" style={{ backgroundColor: colors.secondary.blue, color: colors.neutral.white }}>openai/gpt-oss-20b</option>
+            </select>
           </div>
           <button
-            onClick={() => setIsMinimized(true)}
+            onClick={() => closeChat()}
             style={{
               width: '28px',
               height: '28px',

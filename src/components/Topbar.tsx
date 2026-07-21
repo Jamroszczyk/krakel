@@ -1,9 +1,14 @@
 import { type FC, useState, useRef, useEffect } from 'react';
 import { useGraphStore } from '../store/graphStore';
+import { useUIStore } from '../store/uiStore';
 import { colors } from '../theme/colors';
 
 const Topbar: FC = () => {
   const { addNode, saveToJSON, loadFromJSON, applyAutoLayout, undo, redo, canUndo, canRedo } = useGraphStore();
+  const isChatOpen = useUIStore((state) => state.isChatOpen);
+  const openChat = useUIStore((state) => state.openChat);
+  const isLLMAvailable = useUIStore((state) => state.isLLMAvailable);
+  const isBrainDumpDisabled = isLLMAvailable === false;
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isImpressumOpen, setIsImpressumOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -262,6 +267,55 @@ const Topbar: FC = () => {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5h16M4 12h16M4 19h16" />
           </svg>
           Auto Format
+        </button>
+
+        <button
+          onClick={() => {
+            if (!isBrainDumpDisabled) {
+              openChat();
+            }
+          }}
+          disabled={isBrainDumpDisabled}
+          title={isBrainDumpDisabled ? 'This is a local hosting feature only and doesn\'t work in the web version' : 'AI Brain Dump'}
+          style={{
+            padding: '10px 20px',
+            backgroundColor: isBrainDumpDisabled ? colors.neutral.gray100 : colors.secondary.blue,
+            color: isBrainDumpDisabled ? colors.neutral.gray400 : colors.neutral.white,
+            border: isChatOpen ? `2px solid ${colors.neutral.gray900}` : '2px solid transparent',
+            borderRadius: '8px',
+            fontWeight: '500',
+            fontSize: '14px',
+            cursor: isBrainDumpDisabled ? 'not-allowed' : 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            opacity: isBrainDumpDisabled ? 0.6 : 1,
+            transition: 'background-color 0.2s, opacity 0.2s',
+          }}
+          onMouseEnter={(e) => {
+            if (!isBrainDumpDisabled) {
+              e.currentTarget.style.opacity = '0.85';
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (!isBrainDumpDisabled) {
+              e.currentTarget.style.opacity = '1';
+            }
+          }}
+        >
+          <span
+            style={{
+              width: '10px',
+              height: '10px',
+              borderRadius: '50%',
+              backgroundColor: isBrainDumpDisabled
+                ? colors.neutral.gray400
+                : (isLLMAvailable === true ? colors.neutral.white : colors.neutral.gray200),
+              flexShrink: 0,
+              transition: 'background-color 0.3s',
+            }}
+          />
+          AI Brain Dump
         </button>
       </div>
 
