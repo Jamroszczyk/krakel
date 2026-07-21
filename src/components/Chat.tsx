@@ -199,6 +199,35 @@ Rules:
 - Keep labels short and actionable.
 - Output nothing except the JSON object.`;
 
+// LocalStorage keys + default for the user-configurable LM Studio server.
+const SERVER_URL_STORAGE_KEY = 'krakel_llm_server_url';
+const API_TOKEN_STORAGE_KEY = 'krakel_llm_api_token';
+const DEFAULT_SERVER_URL = 'http://127.0.0.1:1234';
+
+const getInitialServerUrl = (): string => {
+  if (typeof window !== 'undefined') {
+    const saved = window.localStorage.getItem(SERVER_URL_STORAGE_KEY);
+    if (saved && saved.trim()) {
+      return saved.trim();
+    }
+  }
+  const envUrl = import.meta.env.VITE_LLM_API_URL as string | undefined;
+  return envUrl && envUrl.trim() ? envUrl.trim() : DEFAULT_SERVER_URL;
+};
+
+const getInitialApiToken = (): string => {
+  if (typeof window !== 'undefined') {
+    const saved = window.localStorage.getItem(API_TOKEN_STORAGE_KEY);
+    if (saved) {
+      return saved;
+    }
+  }
+  return '';
+};
+
+// Strip trailing slashes so we can safely append `/v1/...`.
+const normalizeServerUrl = (url: string): string => url.trim().replace(/\/+$/, '');
+
 const Chat: FC = () => {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -212,11 +241,12 @@ const Chat: FC = () => {
   const [language, setLanguage] = useState<'en-US' | 'de-DE'>('en-US');
   const [model, setModel] = useState<string>('qwen/qwen3-vl-8b');
   const [audioLevel, setAudioLevel] = useState(0); // For audio visualization
-  const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
-  const [microphone, setMicrophone] = useState<MediaStreamAudioSourceNode | null>(null);
-  const [stream, setStream] = useState<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const microphoneRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const loadFromJSON = useGraphStore(state => state.loadFromJSON);
   
   // Draggable state
@@ -225,22 +255,65 @@ const Chat: FC = () => {
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const chatRef = useRef<HTMLDivElement>(null);
   
-  // LLM API URL - use Vite proxy to avoid CORS issues, can be overridden with env var
-  const LLM_API_URL = import.meta.env.VITE_LLM_API_URL || '/api/lmstudio';
-  
+  // User-configurable LM Studio server URL (persisted to localStorage).
+  const [serverUrl, setServerUrl] = useState<string>(getInitialServerUrl);
+  const [apiToken, setApiToken] = useState<string>(getInitialApiToken);
+  // Draft values shown in the settings inputs before the user applies them.
+  const [serverUrlInput, setServerUrlInput] = useState<string>(getInitialServerUrl);
+  const [apiTokenInput, setApiTokenInput] = useState<string>(getInitialApiToken);
+  const [showSettings, setShowSettings] = useState(false);
+  const [revealToken, setRevealToken] = useState(false); // press-and-hold eye button
+  const LLM_API_URL = normalizeServerUrl(serverUrl);
+
+  // Build request headers, including the Bearer token when one is configured.
+  const buildAuthHeaders = useCallback((): Record<string, string> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (apiToken.trim()) {
+      headers['Authorization'] = `Bearer ${apiToken.trim()}`;
+    }
+    return headers;
+  }, [apiToken]);
+
+  // Persist the server URL whenever it changes.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SERVER_URL_STORAGE_KEY, serverUrl);
+    } catch {
+      // Ignore storage errors (e.g. private mode).
+    }
+  }, [serverUrl]);
+
+  // Persist the API token whenever it changes.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(API_TOKEN_STORAGE_KEY, apiToken);
+    } catch {
+      // Ignore storage errors (e.g. private mode).
+    }
+  }, [apiToken]);
+
   // Track if LLM API is available (local hosting only)
   const isLLMAvailable = useUIStore((state) => state.isLLMAvailable); // null = checking, true = available, false = unavailable
   const setIsLLMAvailable = useUIStore((state) => state.setLLMAvailable);
 
-  // Health check function to test if LLM API is accessible
+  // A non-empty API token is always required to use the feature.
+  const hasApiToken = apiToken.trim().length > 0;
+  // The feature is usable only when the server is reachable AND a token is set.
+  const isReady = isLLMAvailable === true && hasApiToken;
+
+  // Health check function to test if LLM API is accessible.
+  // Skipped until an API token is set — otherwise auth-required servers look "unreachable".
   const checkLLMAvailability = useCallback(async () => {
+    if (!apiToken.trim()) {
+      setIsLLMAvailable(null);
+      return false;
+    }
+
     try {
       // Try to fetch the models endpoint as a health check
       const response = await fetch(`${LLM_API_URL}/v1/models`, {
         method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: buildAuthHeaders(),
         // Add a timeout to avoid hanging
         signal: AbortSignal.timeout(3000), // 3 second timeout
       });
@@ -257,7 +330,7 @@ const Chat: FC = () => {
       setIsLLMAvailable(false);
       return false;
     }
-  }, [LLM_API_URL]);
+  }, [LLM_API_URL, apiToken, buildAuthHeaders, setIsLLMAvailable]);
 
   // Check LLM availability on mount and periodically
   useEffect(() => {
@@ -274,6 +347,32 @@ const Chat: FC = () => {
     };
   }, [checkLLMAvailability]);
 
+  // Stop mic / Web Audio resources used for recording visualization.
+  const cleanupAudio = useCallback(async () => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    if (microphoneRef.current) {
+      microphoneRef.current.disconnect();
+      microphoneRef.current = null;
+    }
+    if (analyserRef.current) {
+      analyserRef.current.disconnect();
+      analyserRef.current = null;
+      setAnalyser(null);
+    }
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      await audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    setAudioLevel(0);
+  }, []);
+
   // Initialize Speech Recognition
   useEffect(() => {
     // Check if browser supports Speech Recognition
@@ -284,10 +383,10 @@ const Chat: FC = () => {
       return;
     }
 
-          const recognitionInstance = new SpeechRecognition();
-          recognitionInstance.continuous = true;
-          recognitionInstance.interimResults = true;
-          recognitionInstance.lang = language; // Use selected language
+    const recognitionInstance = new SpeechRecognition();
+    recognitionInstance.continuous = true;
+    recognitionInstance.interimResults = true;
+    recognitionInstance.lang = language; // Use selected language
 
     recognitionInstance.onresult = (event: SpeechRecognitionEvent) => {
       let interimTranscript = '';
@@ -315,12 +414,26 @@ const Chat: FC = () => {
     recognitionInstance.onerror = (event: SpeechRecognitionErrorEvent) => {
       console.error('Speech recognition error:', event.error);
       setIsRecording(false);
+      void cleanupAudio();
+
+      // This is the browser's Web Speech API (usually Google's cloud), NOT LM Studio.
       if (event.error === 'no-speech') {
         setError('No speech detected. Please try again.');
       } else if (event.error === 'not-allowed') {
         setError('Microphone permission denied. Please allow microphone access.');
+      } else if (event.error === 'network') {
+        setError(
+          'Speech recognition network error. Dictation needs the browser’s cloud speech service (e.g. Google in Chrome) — this is separate from LM Studio. Try Chrome, disable VPN/ad-blocker for this site, or just type your brain dump below.'
+        );
+      } else if (event.error === 'service-not-allowed') {
+        setError(
+          'Speech recognition is blocked by this browser. Try Google Chrome, or type your brain dump below.'
+        );
+      } else if (event.error === 'aborted') {
+        // User/system aborted — no noisy error needed
+        setError(null);
       } else {
-        setError(`Speech recognition error: ${event.error}`);
+        setError(`Speech recognition error: ${event.error}. You can still type your brain dump below.`);
       }
     };
 
@@ -337,7 +450,7 @@ const Chat: FC = () => {
         recognitionInstance.stop();
       }
     };
-  }, [language]); // Recreate recognition when language changes
+  }, [language, cleanupAudio]); // Recreate recognition when language changes
 
   // Update recognition language when it changes (if recognition exists and not recording)
   useEffect(() => {
@@ -438,6 +551,10 @@ const Chat: FC = () => {
   }, [isDragging, dragStart, constrainPosition]);
 
   const handleSend = async () => {
+    if (!hasApiToken) {
+      setError('Enter your LM Studio API token in the settings (gear icon) first.');
+      return;
+    }
     if (!input.trim() || isLoading || isRecording || isLLMAvailable === false) return;
 
     // Stop recording if active
@@ -471,9 +588,7 @@ const Chat: FC = () => {
 
       const response = await fetch(`${LLM_API_URL}/v1/chat/completions`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: buildAuthHeaders(),
         body: JSON.stringify(requestBody),
       });
 
@@ -647,21 +762,20 @@ const Chat: FC = () => {
     };
   }, [isRecording, analyser]);
 
-  // Cleanup audio resources
+  // Cleanup audio resources on unmount
   useEffect(() => {
     return () => {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
-      if (audioContext && audioContext.state !== 'closed') {
-        audioContext.close();
-      }
+      void cleanupAudio();
     };
-  }, [stream, audioContext]);
+  }, [cleanupAudio]);
 
   const toggleRecording = async () => {
+    if (!hasApiToken) {
+      setError('Enter your LM Studio API token in the settings (gear icon) first.');
+      return;
+    }
     if (isLLMAvailable === false) {
-      setError('This is a local hosting feature only and doesn\'t work in the web version');
+      setError('No LM Studio server connected. Open the settings (gear icon) to set up your server.');
       return;
     }
     
@@ -674,25 +788,7 @@ const Chat: FC = () => {
       // Stop recording
       recognition.stop();
       setIsRecording(false);
-      
-      // Stop audio stream
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-        setStream(null);
-      }
-      if (microphone) {
-        microphone.disconnect();
-        setMicrophone(null);
-      }
-      if (analyser) {
-        analyser.disconnect();
-        setAnalyser(null);
-      }
-      if (audioContext && audioContext.state !== 'closed') {
-        await audioContext.close();
-        setAudioContext(null);
-      }
-      setAudioLevel(0);
+      await cleanupAudio();
     } else {
       // Start recording
       setError(null);
@@ -700,20 +796,21 @@ const Chat: FC = () => {
       try {
         // Get microphone access and set up audio visualization
         const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        setStream(mediaStream);
+        streamRef.current = mediaStream;
         
         // Create audio context for visualization
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         const ctx = new AudioContextClass();
-        setAudioContext(ctx);
+        audioContextRef.current = ctx;
         
         const source = ctx.createMediaStreamSource(mediaStream);
-        setMicrophone(source);
+        microphoneRef.current = source;
         
         const analyserNode = ctx.createAnalyser();
         analyserNode.fftSize = 256;
         analyserNode.smoothingTimeConstant = 0.8;
         source.connect(analyserNode);
+        analyserRef.current = analyserNode;
         setAnalyser(analyserNode);
         
         // Start speech recognition
@@ -721,9 +818,24 @@ const Chat: FC = () => {
         setIsRecording(true);
       } catch (err) {
         console.error('Error accessing microphone:', err);
+        await cleanupAudio();
         setError('Failed to access microphone. Please allow microphone permissions.');
       }
     }
+  };
+
+  // Apply the draft server URL + token: normalize, persist, and re-run the health check.
+  const applyServerSettings = () => {
+    const trimmedUrl = normalizeServerUrl(serverUrlInput);
+    if (!trimmedUrl) {
+      return;
+    }
+    const trimmedToken = apiTokenInput.trim();
+    setServerUrlInput(trimmedUrl);
+    setApiTokenInput(trimmedToken);
+    setServerUrl(trimmedUrl);
+    setApiToken(trimmedToken);
+    setIsLLMAvailable(null); // back to "checking" until the next health check resolves
   };
 
   // When closed, the entry point lives in the Topbar (see Topbar.tsx).
@@ -757,6 +869,7 @@ const Chat: FC = () => {
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
+          position: 'relative',
         }}
       >
         {/* Header */}
@@ -774,14 +887,14 @@ const Chat: FC = () => {
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <div style={{ fontSize: '16px', fontWeight: '600' }}>
               AI Brain Dump
-              {isLLMAvailable === false && (
+              {!isReady && (
                 <span style={{ 
                   fontSize: '12px', 
                   color: 'rgba(255, 255, 255, 0.7)',
                   marginLeft: '8px',
                   fontStyle: 'italic'
                 }}>
-                  (Local only)
+                  {!hasApiToken ? '(Token required)' : '(Not connected)'}
                 </span>
               )}
             </div>
@@ -849,33 +962,68 @@ const Chat: FC = () => {
               <option value="openai/gpt-oss-20b" style={{ backgroundColor: colors.secondary.blue, color: colors.neutral.white }}>openai/gpt-oss-20b</option>
             </select>
           </div>
-          <button
-            onClick={() => closeChat()}
-            style={{
-              width: '28px',
-              height: '28px',
-              borderRadius: '50%',
-              border: `2px solid ${colors.neutral.white}`,
-              backgroundColor: 'transparent',
-              color: colors.neutral.white,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '18px',
-              fontWeight: 'bold',
-              transition: 'all 0.2s',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = 'transparent';
-            }}
-            title="Minimize"
-          >
-            −
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              onClick={() => {
+                setServerUrlInput(serverUrl);
+                setApiTokenInput(apiToken);
+                setRevealToken(false);
+                setShowSettings(true);
+              }}
+              style={{
+                width: '28px',
+                height: '28px',
+                borderRadius: '50%',
+                border: `2px solid ${colors.neutral.white}`,
+                backgroundColor: 'transparent',
+                color: colors.neutral.white,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'all 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = 'transparent';
+              }}
+              title="Server settings"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+            </button>
+            <button
+              onClick={() => closeChat()}
+              style={{
+                width: '28px',
+                height: '28px',
+                borderRadius: '50%',
+                border: `2px solid ${colors.neutral.white}`,
+                backgroundColor: 'transparent',
+                color: colors.neutral.white,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '18px',
+                fontWeight: 'bold',
+                transition: 'all 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = 'transparent';
+              }}
+              title="Minimize"
+            >
+              −
+            </button>
+          </div>
         </div>
 
          {/* Content Area */}
@@ -1008,16 +1156,16 @@ const Chat: FC = () => {
                    }}
                  >
                   <div
-                    title={isLLMAvailable === false ? 'This is a local hosting feature only and doesn\'t work in the web version' : undefined}
+                    title={!hasApiToken ? 'Enter your LM Studio API token in the settings (gear icon) first' : (isLLMAvailable === false ? 'No LM Studio server connected' : undefined)}
                     style={{
-                      opacity: isLLMAvailable === false ? 0.5 : 1,
-                      cursor: isLLMAvailable === false ? 'not-allowed' : 'pointer',
+                      opacity: !isReady ? 0.5 : 1,
+                      cursor: !isReady ? 'not-allowed' : 'pointer',
                     }}
                   >
                     <MorphingSphere 
                       isRecording={isRecording} 
                       audioLevel={audioLevel}
-                      onClick={isLoading || isLLMAvailable === false ? () => {} : toggleRecording}
+                      onClick={isLoading || !isReady ? () => {} : toggleRecording}
                     />
                   </div>
                  </div>
@@ -1058,48 +1206,110 @@ const Chat: FC = () => {
                    </div>
                  </div>
 
-                 {/* Instruction text - always reserve space */}
-                 <div
-                   style={{
-                     fontSize: '14px',
-                     color: colors.neutral.gray500,
-                     maxWidth: '300px',
-                     textAlign: 'center',
-                     height: '40px', // Fixed height to prevent movement
-                     display: 'flex',
-                     alignItems: 'center',
-                     justifyContent: 'center',
-                     opacity: (!isRecording && !input.trim() && isLLMAvailable !== false) ? 1 : 0,
-                     transition: 'opacity 0.2s ease',
-                   }}
-                 >
-                   {isLLMAvailable === null 
-                     ? 'Checking LLM availability...'
-                     : 'Click the button and tell us what you have to do. Or start typing below.'}
-                 </div>
+                {/* Instruction text - always reserve space */}
+                <div
+                  style={{
+                    fontSize: '14px',
+                    color: colors.neutral.gray500,
+                    maxWidth: '300px',
+                    textAlign: 'center',
+                    height: '40px', // Fixed height to prevent movement
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    opacity: (!isRecording && !input.trim() && (hasApiToken ? isLLMAvailable !== false : true)) ? 1 : 0,
+                    transition: 'opacity 0.2s ease',
+                  }}
+                >
+                  {!hasApiToken
+                    ? 'Enter your LM Studio API token in the settings (gear icon) to get started.'
+                    : isLLMAvailable === null
+                    ? 'Checking LLM availability...'
+                    : 'Click the button and tell us what you have to do. Or start typing below.'}
+                </div>
                  
-                 {/* Show message when LLM is not available */}
-                 {isLLMAvailable === false && (
-                   <div
-                     style={{
-                       fontSize: '13px',
-                       color: colors.neutral.gray500,
-                       maxWidth: '300px',
-                       textAlign: 'center',
-                       padding: '12px',
-                       backgroundColor: colors.neutral.gray50,
-                       borderRadius: '8px',
-                       border: `1px solid ${colors.neutral.gray200}`,
-                       marginTop: '8px',
-                     }}
-                   >
-                     This is a local hosting feature only and doesn't work in the web version.
-                     <br />
-                     <span style={{ fontSize: '12px', fontStyle: 'italic' }}>
-                       Requires LM Studio running on localhost:1234
-                     </span>
-                   </div>
-                 )}
+                {/* Missing token takes priority over "server unreachable" */}
+                {!hasApiToken && (
+                  <div
+                    style={{
+                      fontSize: '13px',
+                      color: colors.neutral.gray500,
+                      maxWidth: '300px',
+                      textAlign: 'center',
+                      padding: '12px',
+                      backgroundColor: colors.neutral.gray50,
+                      borderRadius: '8px',
+                      border: `1px solid ${colors.neutral.gray200}`,
+                      marginTop: '8px',
+                    }}
+                  >
+                    An API token is required before you can use the mic or Create Graph.
+                    <br />
+                    <button
+                      onClick={() => {
+                        setServerUrlInput(serverUrl);
+                        setApiTokenInput(apiToken);
+                        setRevealToken(false);
+                        setShowSettings(true);
+                      }}
+                      style={{
+                        marginTop: '8px',
+                        padding: '6px 12px',
+                        backgroundColor: colors.secondary.blue,
+                        color: colors.neutral.white,
+                        border: 'none',
+                        borderRadius: '8px',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Enter API token
+                    </button>
+                  </div>
+                )}
+
+                {/* Show message when LLM is not available (only after a token is set) */}
+                {hasApiToken && isLLMAvailable === false && (
+                  <div
+                    style={{
+                      fontSize: '13px',
+                      color: colors.neutral.gray500,
+                      maxWidth: '300px',
+                      textAlign: 'center',
+                      padding: '12px',
+                      backgroundColor: colors.neutral.gray50,
+                      borderRadius: '8px',
+                      border: `1px solid ${colors.neutral.gray200}`,
+                      marginTop: '8px',
+                    }}
+                  >
+                    Couldn't reach an LM Studio server at{' '}
+                    <span style={{ fontFamily: 'monospace', fontStyle: 'normal' }}>{LLM_API_URL}</span>.
+                    <br />
+                    <button
+                      onClick={() => {
+                        setServerUrlInput(serverUrl);
+                        setApiTokenInput(apiToken);
+                        setRevealToken(false);
+                        setShowSettings(true);
+                      }}
+                      style={{
+                        marginTop: '8px',
+                        padding: '6px 12px',
+                        backgroundColor: colors.secondary.blue,
+                        color: colors.neutral.white,
+                        border: 'none',
+                        borderRadius: '8px',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Set up server
+                    </button>
+                  </div>
+                )}
                </div>
              </>
            )}
@@ -1115,34 +1325,36 @@ const Chat: FC = () => {
              gap: '12px',
            }}
          >
-           {isLLMAvailable === false ? (
-             <div
-               style={{
-                 width: '100%',
-                 padding: '12px 16px',
-                 borderRadius: '12px',
-                 border: `2px solid ${colors.neutral.gray200}`,
-                 backgroundColor: colors.neutral.gray50,
-                 color: colors.neutral.gray500,
-                 fontSize: '14px',
-                 textAlign: 'center',
-                 cursor: 'not-allowed',
-                 minHeight: '80px',
-                 display: 'flex',
-                 alignItems: 'center',
-                 justifyContent: 'center',
-               }}
-               title="This is a local hosting feature only and doesn't work in the web version"
-             >
-               This feature requires a local LLM server (LM Studio) running on localhost:1234
-             </div>
+          {!isReady ? (
+            <div
+              style={{
+                width: '100%',
+                padding: '12px 16px',
+                borderRadius: '12px',
+                border: `2px solid ${colors.neutral.gray200}`,
+                backgroundColor: colors.neutral.gray50,
+                color: colors.neutral.gray500,
+                fontSize: '14px',
+                textAlign: 'center',
+                cursor: 'not-allowed',
+                minHeight: '80px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              title="Configure your LM Studio server and API token in the settings (gear icon)"
+            >
+              {!hasApiToken
+                ? 'Enter your LM Studio API token in the settings (gear icon) to use this feature.'
+                : 'Connect your LM Studio server to use this feature. Open the settings (gear icon) to set it up.'}
+            </div>
           ) : (
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={isRecording ? "Your speech will appear here..." : "Or type your thoughts here..."}
-              disabled={isLoading || isLLMAvailable !== true}
+              disabled={isLoading || !isReady}
                style={{
                  width: '100%',
                  padding: '12px 16px',
@@ -1168,47 +1380,393 @@ const Chat: FC = () => {
                }}
              />
            )}
-           <button
-             onClick={isLLMAvailable === false ? () => {} : handleSend}
-             disabled={isLLMAvailable === false || isLoading || !input.trim() || isRecording}
-             title={isLLMAvailable === false ? 'This is a local hosting feature only and doesn\'t work in the web version' : undefined}
-             style={{
-               padding: '12px 24px',
-               backgroundColor:
-                 isLLMAvailable === false || !input.trim() || isLoading || isRecording
-                   ? colors.neutral.gray200
-                   : colors.secondary.blue,
-               color: colors.neutral.white,
-               border: 'none',
-               borderRadius: '10px',
-               fontSize: '15px',
-               fontWeight: '600',
-               cursor:
-                 isLLMAvailable === false || !input.trim() || isLoading || isRecording ? 'not-allowed' : 'pointer',
-               transition: 'all 0.2s',
-               boxShadow: isLLMAvailable === false || !input.trim() || isLoading || isRecording 
-                 ? 'none' 
-                 : '0 4px 12px rgba(0, 0, 0, 0.15)',
-               opacity: isLLMAvailable === false ? 0.5 : 1,
-             }}
-             onMouseEnter={(e) => {
-               if (isLLMAvailable !== false && input.trim() && !isLoading && !isRecording) {
-                 e.currentTarget.style.backgroundColor = colors.primary.main;
-                 e.currentTarget.style.transform = 'translateY(-1px)';
-                 e.currentTarget.style.boxShadow = '0 6px 16px rgba(0, 0, 0, 0.2)';
-               }
-             }}
-             onMouseLeave={(e) => {
-               if (isLLMAvailable !== false && input.trim() && !isLoading && !isRecording) {
-                 e.currentTarget.style.backgroundColor = colors.secondary.blue;
-                 e.currentTarget.style.transform = 'translateY(0)';
-                 e.currentTarget.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.15)';
-               }
-             }}
-           >
-             Create Graph
-           </button>
+          <button
+            onClick={!isReady ? () => {} : handleSend}
+            disabled={!isReady || isLoading || !input.trim() || isRecording}
+            title={!hasApiToken ? 'Enter your LM Studio API token in the settings (gear icon) first' : (isLLMAvailable === false ? 'No LM Studio server connected' : undefined)}
+            style={{
+              padding: '12px 24px',
+              backgroundColor:
+                !isReady || !input.trim() || isLoading || isRecording
+                  ? colors.neutral.gray200
+                  : colors.secondary.blue,
+              color: colors.neutral.white,
+              border: 'none',
+              borderRadius: '10px',
+              fontSize: '15px',
+              fontWeight: '600',
+              cursor:
+                !isReady || !input.trim() || isLoading || isRecording ? 'not-allowed' : 'pointer',
+              transition: 'all 0.2s',
+              boxShadow: !isReady || !input.trim() || isLoading || isRecording 
+                ? 'none' 
+                : '0 4px 12px rgba(0, 0, 0, 0.15)',
+              opacity: !isReady ? 0.5 : 1,
+            }}
+            onMouseEnter={(e) => {
+              if (isReady && input.trim() && !isLoading && !isRecording) {
+                e.currentTarget.style.backgroundColor = colors.primary.main;
+                e.currentTarget.style.transform = 'translateY(-1px)';
+                e.currentTarget.style.boxShadow = '0 6px 16px rgba(0, 0, 0, 0.2)';
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (isReady && input.trim() && !isLoading && !isRecording) {
+                e.currentTarget.style.backgroundColor = colors.secondary.blue;
+                e.currentTarget.style.transform = 'translateY(0)';
+                e.currentTarget.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.15)';
+              }
+            }}
+          >
+            Create Graph
+          </button>
          </div>
+
+        {/* Server settings overlay */}
+        {showSettings && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              backgroundColor: colors.neutral.white,
+              borderRadius: '14px',
+              display: 'flex',
+              flexDirection: 'column',
+              zIndex: 10,
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            {/* Settings header */}
+            <div
+              style={{
+                padding: '16px',
+                borderBottom: `1px solid ${colors.neutral.gray200}`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                backgroundColor: colors.secondary.blue,
+                color: colors.neutral.white,
+              }}
+            >
+              <div style={{ fontSize: '16px', fontWeight: '600' }}>LM Studio Server</div>
+              <button
+                onClick={() => setShowSettings(false)}
+                style={{
+                  width: '28px',
+                  height: '28px',
+                  borderRadius: '50%',
+                  border: `2px solid ${colors.neutral.white}`,
+                  backgroundColor: 'transparent',
+                  color: colors.neutral.white,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '18px',
+                  fontWeight: 'bold',
+                  transition: 'all 0.2s',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = 'transparent';
+                }}
+                title="Back"
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Settings body */}
+            <div
+              style={{
+                flex: 1,
+                overflowY: 'auto',
+                padding: '20px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '16px',
+                minHeight: 0,
+              }}
+            >
+              <div>
+                <label
+                  style={{
+                    display: 'block',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                    color: colors.neutral.gray700,
+                    marginBottom: '6px',
+                  }}
+                >
+                  Server URL
+                </label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    value={serverUrlInput}
+                    onChange={(e) => setServerUrlInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        applyServerSettings();
+                      }
+                    }}
+                    placeholder={DEFAULT_SERVER_URL}
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    style={{
+                      flex: 1,
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      border: `2px solid ${colors.neutral.gray200}`,
+                      fontSize: '13px',
+                      fontFamily: 'monospace',
+                      outline: 'none',
+                      color: colors.neutral.gray800,
+                    }}
+                    onFocus={(e) => {
+                      e.currentTarget.style.borderColor = colors.secondary.blue;
+                    }}
+                    onBlur={(e) => {
+                      e.currentTarget.style.borderColor = colors.neutral.gray200;
+                    }}
+                  />
+                </div>
+                <button
+                  onClick={() => {
+                    setServerUrlInput(DEFAULT_SERVER_URL);
+                    setServerUrl(DEFAULT_SERVER_URL);
+                    setIsLLMAvailable(null);
+                  }}
+                  style={{
+                    marginTop: '8px',
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    color: colors.neutral.gray500,
+                    fontSize: '12px',
+                    cursor: 'pointer',
+                    textDecoration: 'underline',
+                  }}
+                >
+                  Reset to {DEFAULT_SERVER_URL}
+                </button>
+              </div>
+
+              {/* API token */}
+              <div>
+                <label
+                  style={{
+                    display: 'block',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                    color: colors.neutral.gray700,
+                    marginBottom: '6px',
+                  }}
+                >
+                  API token
+                </label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <div style={{ position: 'relative', flex: 1 }}>
+                    <input
+                      type={revealToken ? 'text' : 'password'}
+                      value={apiTokenInput}
+                      onChange={(e) => setApiTokenInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          applyServerSettings();
+                        }
+                      }}
+                      placeholder="sk-lm-..."
+                      spellCheck={false}
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      autoComplete="off"
+                      style={{
+                        width: '100%',
+                        padding: '10px 40px 10px 12px',
+                        borderRadius: '8px',
+                        border: `2px solid ${colors.neutral.gray200}`,
+                        fontSize: '13px',
+                        fontFamily: 'monospace',
+                        outline: 'none',
+                        color: colors.neutral.gray800,
+                        boxSizing: 'border-box',
+                      }}
+                      onFocus={(e) => {
+                        e.currentTarget.style.borderColor = colors.secondary.blue;
+                      }}
+                      onBlur={(e) => {
+                        e.currentTarget.style.borderColor = colors.neutral.gray200;
+                      }}
+                    />
+                    <button
+                      type="button"
+                      aria-label="Hold to reveal token"
+                      title="Hold to reveal"
+                      onMouseDown={() => setRevealToken(true)}
+                      onMouseUp={() => setRevealToken(false)}
+                      onMouseLeave={() => setRevealToken(false)}
+                      onTouchStart={(e) => {
+                        e.preventDefault();
+                        setRevealToken(true);
+                      }}
+                      onTouchEnd={() => setRevealToken(false)}
+                      style={{
+                        position: 'absolute',
+                        top: '50%',
+                        right: '8px',
+                        transform: 'translateY(-50%)',
+                        width: '26px',
+                        height: '26px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: 'none',
+                        border: 'none',
+                        padding: 0,
+                        cursor: 'pointer',
+                        color: revealToken ? colors.secondary.blue : colors.neutral.gray500,
+                      }}
+                    >
+                      {revealToken ? (
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                          <circle cx="12" cy="12" r="3" />
+                        </svg>
+                      ) : (
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                          <line x1="1" y1="1" x2="23" y2="23" />
+                        </svg>
+                      )}
+                    </button>
+                  </div>
+                  <button
+                    onClick={applyServerSettings}
+                    style={{
+                      padding: '10px 16px',
+                      backgroundColor: colors.secondary.blue,
+                      color: colors.neutral.white,
+                      border: 'none',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    Connect
+                  </button>
+                </div>
+                <div
+                  style={{
+                    marginTop: '6px',
+                    fontSize: '12px',
+                    color: colors.neutral.gray500,
+                  }}
+                >
+                  Required. Create it in LM Studio → Require Authentication → Manage Tokens, then paste it here.
+                </div>
+              </div>
+
+              {/* Connection status */}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '10px 12px',
+                  borderRadius: '8px',
+                  backgroundColor: colors.neutral.gray50,
+                  border: `1px solid ${colors.neutral.gray200}`,
+                  fontSize: '13px',
+                  color: colors.neutral.gray700,
+                }}
+              >
+                <span
+                  style={{
+                    width: '10px',
+                    height: '10px',
+                    borderRadius: '50%',
+                    flexShrink: 0,
+                    backgroundColor:
+                      !hasApiToken
+                        ? colors.warning
+                        : isLLMAvailable === true
+                        ? colors.success
+                        : isLLMAvailable === false
+                        ? colors.error
+                        : colors.warning,
+                  }}
+                />
+                <span>
+                  {!hasApiToken
+                    ? 'API token required'
+                    : isLLMAvailable === true
+                    ? 'Connected'
+                    : isLLMAvailable === false
+                    ? 'Not reachable'
+                    : 'Checking…'}
+                  {' — '}
+                  <span style={{ fontFamily: 'monospace' }}>{LLM_API_URL}</span>
+                </span>
+              </div>
+
+              {/* Setup instructions */}
+              <div
+                style={{
+                  fontSize: '13px',
+                  color: colors.neutral.gray700,
+                  lineHeight: 1.5,
+                }}
+              >
+                <div style={{ fontWeight: '600', marginBottom: '8px', color: colors.neutral.gray800 }}>
+                  How to connect your own GPU
+                </div>
+                <ol style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <li>Install and open <strong>LM Studio</strong>, then load a model.</li>
+                  <li>Go to the <strong>Developer</strong> tab and start the <strong>Local Server</strong> (Status: Running).</li>
+                  <li>
+                    In <strong>Server Settings</strong>, turn <strong>Enable CORS</strong> ON. This is required for the
+                    website to talk to your server.
+                  </li>
+                  <li>
+                    Turn <strong>Require Authentication</strong> ON, open <strong>Manage Tokens</strong>, create a token
+                    (looks like <code>sk-lm-…:…</code>), and paste it into the <strong>API token</strong> field above. This
+                    ensures only you can use your server.
+                  </li>
+                  <li>
+                    Keep the <strong>Server Port</strong> at <code>1234</code> (or update the URL above to match).
+                  </li>
+                  <li>
+                    Leave <strong>Serve on Local Network</strong> OFF — the site connects to your machine via{' '}
+                    <code>127.0.0.1</code>.
+                  </li>
+                  <li>Enter the URL + token above and click <strong>Connect</strong>.</li>
+                </ol>
+                <div
+                  style={{
+                    marginTop: '12px',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    backgroundColor: colors.neutral.gray50,
+                    border: `1px solid ${colors.neutral.gray200}`,
+                    fontSize: '12px',
+                    color: colors.neutral.gray600,
+                  }}
+                >
+                  Your browser may ask for permission to access a local network device — allow it. Everything runs on
+                  your machine; your notes are sent only to your own LM Studio server.
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
